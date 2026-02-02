@@ -28,4 +28,8 @@ resources:
 - sqsconsumer_admin_role.yaml
 - sqsconsumer_editor_role.yaml
 - sqsconsumer_viewer_role.yaml
+- documentprocessor_admin_role.yaml
+- documentprocessor_editor_role.yaml
+- documentprocessor_viewer_role.yaml
+
 

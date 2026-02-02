@@ -16,6 +16,7 @@ rules:
   - operator.dataverse.redhat.com
   resources:
   - controllerconfigs
+  - documentprocessors
   - sqsconsumers
   verbs:
   - create
@@ -29,6 +30,7 @@ rules:
   - operator.dataverse.redhat.com
   resources:
   - controllerconfigs/finalizers
+  - documentprocessors/finalizers
   - sqsconsumers/finalizers
   verbs:
   - update
@@ -36,6 +38,7 @@ rules:
   - operator.dataverse.redhat.com
   resources:
   - controllerconfigs/status
+  - documentprocessors/status
   - sqsconsumers/status
   verbs:
   - get

@@ -8,4 +8,8 @@ metadata:
 spec:
   awsSecret: aws-secret
   unstructuredDataProcessingConfig:
-    ingestionBucket: data-ingestion-bucket
+    doclingServeURL: "http://localhost:5001"
+    ingestionBucket: "data-ingestion-bucket"
+    dataStorageBucket: "data-storage-bucket"
+    cacheDirectory: "/home/ppunamiy/unstructured-data-controller/tmp/cache/"
+    maxConcurrentDoclingTasks: 5

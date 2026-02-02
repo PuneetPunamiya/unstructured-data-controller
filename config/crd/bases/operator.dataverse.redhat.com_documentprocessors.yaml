@@ -4,27 +4,27 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: controllerconfigs.operator.dataverse.redhat.com
+  name: documentprocessors.operator.dataverse.redhat.com
 spec:
   group: operator.dataverse.redhat.com
   names:
-    kind: ControllerConfig
-    listKind: ControllerConfigList
-    plural: controllerconfigs
-    singular: controllerconfig
+    kind: DocumentProcessor
+    listKind: DocumentProcessorList
+    plural: documentprocessors
+    singular: documentprocessor
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="ConfigReady")].status
+    - jsonPath: .status.conditions[?(@.type=="DocumentProcessorReady")].status
       name: Status
       type: string
-    - jsonPath: .status.conditions[?(@.type=="ConfigReady")].message
+    - jsonPath: .status.conditions[?(@.type=="DocumentProcessorReady")].message
       name: Message
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ControllerConfig is the Schema for the controllerconfigs API.
+        description: DocumentProcessor is the Schema for the documentprocessors API
         properties:
           apiVersion:
             description: |-
@@ -44,26 +44,43 @@ spec:
           metadata:
             type: object
           spec:
-            description: ControllerConfigSpec defines the desired state of ControllerConfig.
+            description: DocumentProcessorSpec defines the desired state of DocumentProcessor
             properties:
-              awsSecret:
-                type: string
-              unstructuredDataProcessingConfig:
+              config:
                 properties:
-                  cacheDirectory:
+                  doclingConfig:
+                    properties:
+                      do_ocr:
+                        type: boolean
+                      force_ocr:
+                        type: boolean
+                      from_formats:
+                        items:
+                          type: string
+                        type: array
+                      image_export_mode:
+                        type: string
+                      ocr_engine:
+                        type: string
+                      ocr_lang:
+                        items:
+                          type: string
+                        type: array
+                      pdf_backend:
+                        type: string
+                      table_mode:
+                        type: string
+                    type: object
+                  type:
                     type: string
-                  dataStorageBucket:
-                    type: string
-                  doclingServeURL:
-                    type: string
-                  ingestionBucket:
-                    type: string
-                  maxConcurrentDoclingTasks:
-                    type: integer
+                required:
+                - type
                 type: object
+              dataProduct:
+                type: string
             type: object
           status:
-            description: ControllerConfigStatus defines the observed state of ControllerConfig.
+            description: DocumentProcessorStatus defines the observed state of DocumentProcessor
             properties:
               conditions:
                 items:
@@ -121,9 +138,53 @@ spec:
                   - type
                   type: object
                 type: array
+              jobs:
+                items:
+                  properties:
+                    attempts:
+                      type: integer
+                    createdOn:
+                      type: string
+                    doclingConfig:
+                      properties:
+                        do_ocr:
+                          type: boolean
+                        force_ocr:
+                          type: boolean
+                        from_formats:
+                          items:
+                            type: string
+                          type: array
+                        image_export_mode:
+                          type: string
+                        ocr_engine:
+                          type: string
+                        ocr_lang:
+                          items:
+                            type: string
+                          type: array
+                        pdf_backend:
+                          type: string
+                        table_mode:
+                          type: string
+                      type: object
+                    documentConverter:
+                      type: string
+                    filePath:
+                      type: string
+                    status:
+                      type: string
+                    taskID:
+                      type: string
+                  type: object
+                type: array
               lastAppliedGeneration:
                 format: int64
                 type: integer
+              permanentlyFailingFiles:
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true
