@@ -124,21 +124,21 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	logger.Info(fmt.Sprintf("Ingestion bucket: %s, Data storage bucket: %s, Cache directory: %s",
 		ingestionBucket, dataStorageBucket, cacheDirectory))
 
-	awsEndpoint := string(unstructuredSecret.Data["AWS_ENDPOINT"])
-	if awsEndpoint != "" {
+	sourceAwsEndpoint := string(unstructuredSecret.Data["SOURCE_AWS_ENDPOINT"])
+	if sourceAwsEndpoint != "" {
 		// generate AWS clients now
 		awsConfig := awsclienthandler.AWSConfig{
-			Region:          string(unstructuredSecret.Data["AWS_REGION"]),
-			AccessKeyID:     string(unstructuredSecret.Data["AWS_ACCESS_KEY_ID"]),
-			SecretAccessKey: string(unstructuredSecret.Data["AWS_SECRET_ACCESS_KEY"]),
-			SessionToken:    string(unstructuredSecret.Data["AWS_SESSION_TOKEN"]),
-			Endpoint:        awsEndpoint,
+			Region:          string(unstructuredSecret.Data["SOURCE_AWS_REGION"]),
+			AccessKeyID:     string(unstructuredSecret.Data["SOURCE_AWS_ACCESS_KEY_ID"]),
+			SecretAccessKey: string(unstructuredSecret.Data["SOURCE_AWS_SECRET_ACCESS_KEY"]),
+			SessionToken:    string(unstructuredSecret.Data["SOURCE_AWS_SESSION_TOKEN"]),
+			Endpoint:        sourceAwsEndpoint,
 		}
 		if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("SQS client created ...")
-		if _, err := awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig); err != nil {
+		if err := awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("S3 client created ...")
@@ -146,6 +146,21 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			return ctrl.Result{}, err
 		}
 		logger.Info("Presign client created ...")
+	}
+
+	destinationAwsEndpoint := string(unstructuredSecret.Data["DESTINATION_AWS_ENDPOINT"])
+	if destinationAwsEndpoint != "" {
+		awsConfig := awsclienthandler.AWSConfig{
+			Region:          string(unstructuredSecret.Data["DESTINATION_AWS_REGION"]),
+			AccessKeyID:     string(unstructuredSecret.Data["DESTINATION_AWS_ACCESS_KEY_ID"]),
+			SecretAccessKey: string(unstructuredSecret.Data["DESTINATION_AWS_SECRET_ACCESS_KEY"]),
+			SessionToken:    string(unstructuredSecret.Data["DESTINATION_AWS_SESSION_TOKEN"]),
+			Endpoint:        destinationAwsEndpoint,
+		}
+		if err := awsclienthandler.NewDestinationS3ClientFromConfig(ctx, &awsConfig); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info("Destination S3 client created ...")
 	}
 
 	snowflakePrivateKey := unstructuredSecret.Data["SNOWFLAKE_PRIVATE_KEY"]

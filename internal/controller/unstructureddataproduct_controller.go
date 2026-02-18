@@ -32,6 +32,7 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
@@ -95,14 +96,6 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return ctrl.Result{}, err
 	}
 
-	// get the snowflake client
-	sf, err := snowflake.GetClient()
-	if err != nil {
-		logger.Error(err, "failed to get snowflake client")
-		return ctrl.Result{}, err
-	}
-	r.sf = sf
-
 	// first, let's create (or update) the DocumentProcessor CR for this data product
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
 		ObjectMeta: metav1.ObjectMeta{
@@ -148,7 +141,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 
 	var source unstructured.DataSource
 	switch unstructuredDataProductCR.Spec.SourceConfig.Type {
-	case operatorv1alpha1.SourceTypeS3:
+	case operatorv1alpha1.TypeS3:
 		// read all files from the ingestion bucket and store them in the filestore only if file not exists
 		source = &unstructured.S3BucketSource{
 			Bucket: unstructuredDataProductCR.Spec.SourceConfig.S3Config.Bucket,
@@ -228,13 +221,20 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	var destination unstructured.Destination
 	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
 	case operatorv1alpha1.DestinationTypeInternalStage:
-
-		destination = &unstructured.SnowflakeInternalStage{
-			Client:   sf,
-			Role:     sf.GetRole(),
-			Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
-			Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
-			Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		var err error
+		destination, err = r.setupSnowflakeDestination(ctx, unstructuredDataProductCR)
+		if err != nil {
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+	case operatorv1alpha1.TypeS3:
+		var err error
+		destination, err = setupS3Destination(unstructuredDataProductCR, dataProductName)
+		if err != nil {
+			if IsAWSClientNotInitializedError(err) {
+				logger.Info("ControllerConfig has not initialized destination S3 client yet, will try again in a bit ...")
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+			return r.handleError(ctx, unstructuredDataProductCR, err)
 		}
 	default:
 		err := fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
@@ -271,6 +271,39 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	logger.Info("successfully updated UnstructuredDataProduct CR status", "status", unstructuredDataProductCR.Status)
 
 	return ctrl.Result{}, nil
+}
+
+// setupSnowflakeDestination returns a Snowflake internal stage destination for the given CR.
+func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct) (unstructured.Destination, error) {
+	logger := log.FromContext(ctx)
+	sf, err := snowflake.GetClient()
+	if err != nil {
+		logger.Error(err, "failed to get snowflake client")
+		return nil, err
+	}
+	r.sf = sf
+	return &unstructured.SnowflakeInternalStage{
+		Client:   sf,
+		Role:     sf.GetRole(),
+		Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
+		Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
+		Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+	}, nil
+}
+
+// setupS3Destination returns an S3 destination for the given CR
+func setupS3Destination(unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, dataProductName string) (unstructured.Destination, error) {
+	destCfg := unstructuredDataProductCR.Spec.DestinationConfig.S3DestinationConfig
+	destinationS3Client, err := awsclienthandler.GetDestinationS3Client()
+	if err != nil {
+		return nil, err
+	}
+	return &unstructured.S3Destination{
+		S3Client:        destinationS3Client,
+		Bucket:          destCfg.Bucket,
+		Prefix:          destCfg.Prefix,
+		DataProductName: dataProductName,
+	}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

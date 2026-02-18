@@ -21,17 +21,16 @@ import (
 )
 
 type (
-	UnstructuredDataSourceType      string
-	UnstructuredDataDestinationType string
-	ChunkingStrategy                string
+	UnstructuredDataType string
+	ChunkingStrategy     string
 )
 
 const (
-	SourceTypeS3                       UnstructuredDataSourceType      = "s3"
-	DestinationTypeInternalStage       UnstructuredDataDestinationType = "snowflakeInternalStage"
-	ChunkingStrategyRecursiveCharacter ChunkingStrategy                = "recursiveCharacterTextSplitter"
-	ChunkingStrategyMarkdown           ChunkingStrategy                = "markdownTextSplitter"
-	ChunkingStrategyToken              ChunkingStrategy                = "tokenTextSplitter"
+	TypeS3                             UnstructuredDataType = "s3"
+	DestinationTypeInternalStage       UnstructuredDataType = "snowflakeInternalStage"
+	ChunkingStrategyRecursiveCharacter ChunkingStrategy     = "recursiveCharacterTextSplitter"
+	ChunkingStrategyMarkdown           ChunkingStrategy     = "markdownTextSplitter"
+	ChunkingStrategyToken              ChunkingStrategy     = "tokenTextSplitter"
 
 	UnstructuredDataProductCondition = "UnstructuredDataProductReady"
 )
@@ -94,21 +93,26 @@ type UnstructuredDataProductSpec struct {
 	ChunksGeneratorConfig   ChunksGeneratorConfig   `json:"chunksGeneratorConfig,omitempty"`
 }
 
+// SourceConfig defines where to read unstructured data from (e.g. S3).
 type SourceConfig struct {
-	Type     UnstructuredDataSourceType `json:"type,omitempty"`
-	S3Config S3Config                   `json:"s3Config,omitempty"`
+	Type     UnstructuredDataType `json:"type,omitempty"`
+	S3Config S3Config             `json:"s3Config,omitempty"`
 }
 
+// S3Config configures an S3 bucket and optional prefix.
 type S3Config struct {
-	Bucket string `json:"bucket,omitempty"`
+	Bucket string `json:"bucket"`
 	Prefix string `json:"prefix,omitempty"`
 }
 
+// DestinationConfig defines where to write processed data (e.g. Snowflake internal stage or S3).
 type DestinationConfig struct {
-	Type                         UnstructuredDataDestinationType `json:"type,omitempty"`
-	SnowflakeInternalStageConfig SnowflakeInternalStageConfig    `json:"snowflakeInternalStageConfig,omitempty"`
+	Type                         UnstructuredDataType         `json:"type,omitempty"`
+	SnowflakeInternalStageConfig SnowflakeInternalStageConfig `json:"snowflakeInternalStageConfig,omitempty"`
+	S3DestinationConfig          S3Config                     `json:"s3DestinationConfig,omitempty"`
 }
 
+// SnowflakeInternalStageConfig configures a Snowflake database schema and internal stage.
 type SnowflakeInternalStageConfig struct {
 	Stage    string `json:"stage,omitempty"`
 	Database string `json:"database,omitempty"`
