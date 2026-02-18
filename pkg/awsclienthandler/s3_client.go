@@ -29,31 +29,49 @@ import (
 )
 
 var (
-	S3Client      *s3.Client
-	PresignClient *s3.PresignClient
+	S3Client            *s3.Client
+	DestinationS3Client *s3.Client
+	PresignClient       *s3.PresignClient
 )
 
-// NewS3ClientFromConfig creates and returns an Amazon S3 client using the provided context and AWS configuration.
-func NewS3ClientFromConfig(ctx context.Context, awsConfig *AWSConfig) (*s3.Client, error) {
-	logger := log.FromContext(ctx)
+// NewS3ClientFromConfig creates Amazon S3 client for source S3
+func NewS3ClientFromConfig(ctx context.Context, awsConfig *AWSConfig) error {
 	if S3Client != nil {
-		return S3Client, nil
+		return nil
 	}
+	var err error
+	S3Client, err = createS3ClientFromAWSConfig(ctx, awsConfig)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
+// NewDestinationS3ClientFromConfig creates Amazon S3 client destination S3
+func NewDestinationS3ClientFromConfig(ctx context.Context, awsConfig *AWSConfig) error {
+	if DestinationS3Client != nil {
+		return nil
+	}
+	var err error
+	DestinationS3Client, err = createS3ClientFromAWSConfig(ctx, awsConfig)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func createS3ClientFromAWSConfig(ctx context.Context, awsConfig *AWSConfig) (*s3.Client, error) {
 	cfg, err := getAWSConfig(ctx, awsConfig)
 	if err != nil {
 		return nil, err
 	}
-
 	s3Options := func(o *s3.Options) {
 		o.UsePathStyle = true
 		if awsConfig.Endpoint != "" {
 			o.BaseEndpoint = aws.String(awsConfig.Endpoint)
 		}
 	}
-	S3Client = s3.NewFromConfig(cfg, s3Options)
-	logger.Info("S3 client initialized ...")
-	return S3Client, nil
+	return s3.NewFromConfig(cfg, s3Options), nil
 }
 
 // GetS3Client returns the initialized Amazon S3 client instance.
@@ -62,6 +80,14 @@ func GetS3Client() (*s3.Client, error) {
 		return nil, errors.New("S3 client not initialized yet")
 	}
 	return S3Client, nil
+}
+
+// GetDestinationS3Client returns the initialized Amazon S3 client instance.
+func GetDestinationS3Client() (*s3.Client, error) {
+	if DestinationS3Client == nil {
+		return nil, errors.New("S3 client not initialized yet")
+	}
+	return DestinationS3Client, nil
 }
 
 // NewPresignClient creates and returns an Amazon S3 presign client using the provided context and AWS configuration.
