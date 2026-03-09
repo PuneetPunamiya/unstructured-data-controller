@@ -2,7 +2,7 @@
 Untructured Data Pipeline
 
 ## Description
-E2E pipeline to handle unstructured data
+E2E pipeline to handle unstructured
 
 ## Getting Started
 
