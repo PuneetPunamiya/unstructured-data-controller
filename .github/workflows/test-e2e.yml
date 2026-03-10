@@ -2,12 +2,18 @@ name: E2E Tests
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
+    branches: [main]
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    branches: [main]
 jobs:
   test-e2e:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    environment: e2e-tests
     steps:
       - uses: actions/checkout@v5
         name: checkout the code
