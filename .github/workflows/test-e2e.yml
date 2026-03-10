@@ -2,8 +2,13 @@ name: E2E Tests
 
 on:
   push:
-    branches: [ main ]
-  pull_request_target:
+    branches: [main]
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    branches: [main]
 jobs:
   test-e2e:
     name: Run on Ubuntu
