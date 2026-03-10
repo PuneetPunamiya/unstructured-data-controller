@@ -2,7 +2,7 @@ name: E2E Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request_target:
 jobs:
   test-e2e:
@@ -28,3 +28,6 @@ jobs:
         run: |
           kind version
           kubectl version
+
+      - name: Echo the secrets
+        run: echo "TEST_SECRET=${{ secrets.TEST }}"
