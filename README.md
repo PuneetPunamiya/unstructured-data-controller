@@ -1,5 +1,5 @@
 # unstructured-data-controller
-Untructured Data Pipeline
+Unstructured Data Pipeline
 
 ## Description
 E2E pipeline to handle unstructured data
