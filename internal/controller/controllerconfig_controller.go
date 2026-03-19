@@ -138,7 +138,7 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			return ctrl.Result{}, err
 		}
 		logger.Info("SQS client created ...")
-		if err := awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig); err != nil {
+		if err := awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("S3 client created ...")
@@ -161,6 +161,21 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			return ctrl.Result{}, err
 		}
 		logger.Info("Destination S3 client created ...")
+	}
+
+	fileStoreAwsEndpoint := string(unstructuredSecret.Data["FILE_STORE_AWS_ENDPOINT"])
+	if fileStoreAwsEndpoint != "" {
+		awsConfig := awsclienthandler.AWSConfig{
+			Region:          string(unstructuredSecret.Data["FILE_STORE_AWS_REGION"]),
+			AccessKeyID:     string(unstructuredSecret.Data["FILE_STORE_AWS_ACCESS_KEY_ID"]),
+			SecretAccessKey: string(unstructuredSecret.Data["FILE_STORE_AWS_SECRET_ACCESS_KEY"]),
+			SessionToken:    string(unstructuredSecret.Data["FILE_STORE_AWS_SESSION_TOKEN"]),
+			Endpoint:        fileStoreAwsEndpoint,
+		}
+		if err := awsclienthandler.NewFileStoreS3ClientFromConfig(ctx, &awsConfig); err != nil {
+			return ctrl.Result{}, err
+		}
+		logger.Info("File store S3 client created ...")
 	}
 
 	snowflakePrivateKey := unstructuredSecret.Data["SNOWFLAKE_PRIVATE_KEY"]

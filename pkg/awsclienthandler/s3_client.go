@@ -29,18 +29,19 @@ import (
 )
 
 var (
-	S3Client            *s3.Client
+	SourceS3Client      *s3.Client
 	DestinationS3Client *s3.Client
+	FileStoreS3Client   *s3.Client
 	PresignClient       *s3.PresignClient
 )
 
-// NewS3ClientFromConfig creates Amazon S3 client for source S3
-func NewS3ClientFromConfig(ctx context.Context, awsConfig *AWSConfig) error {
-	if S3Client != nil {
+// NewSourceS3ClientFromConfig creates Amazon S3 client for source S3
+func NewSourceS3ClientFromConfig(ctx context.Context, awsConfig *AWSConfig) error {
+	if SourceS3Client != nil {
 		return nil
 	}
 	var err error
-	S3Client, err = createS3ClientFromAWSConfig(ctx, awsConfig)
+	SourceS3Client, err = createS3ClientFromAWSConfig(ctx, awsConfig)
 	if err != nil {
 		return err
 	}
@@ -54,6 +55,18 @@ func NewDestinationS3ClientFromConfig(ctx context.Context, awsConfig *AWSConfig)
 	}
 	var err error
 	DestinationS3Client, err = createS3ClientFromAWSConfig(ctx, awsConfig)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func NewFileStoreS3ClientFromConfig(ctx context.Context, awsConfig *AWSConfig) error {
+	if FileStoreS3Client != nil {
+		return nil
+	}
+	var err error
+	FileStoreS3Client, err = createS3ClientFromAWSConfig(ctx, awsConfig)
 	if err != nil {
 		return err
 	}
@@ -74,18 +87,25 @@ func createS3ClientFromAWSConfig(ctx context.Context, awsConfig *AWSConfig) (*s3
 	return s3.NewFromConfig(cfg, s3Options), nil
 }
 
-// GetS3Client returns the initialized Amazon S3 client instance.
-func GetS3Client() (*s3.Client, error) {
-	if S3Client == nil {
-		return nil, errors.New("S3 client not initialized yet")
+func GetFileStoreS3Client() (*s3.Client, error) {
+	if FileStoreS3Client == nil {
+		return nil, errors.New("file store S3 client not initialized yet")
 	}
-	return S3Client, nil
+	return FileStoreS3Client, nil
+}
+
+// GetSourceS3Client returns the initialized Amazon S3 client instance.
+func GetSourceS3Client() (*s3.Client, error) {
+	if SourceS3Client == nil {
+		return nil, errors.New("source S3 client not initialized yet")
+	}
+	return SourceS3Client, nil
 }
 
 // GetDestinationS3Client returns the initialized Amazon S3 client instance.
 func GetDestinationS3Client() (*s3.Client, error) {
 	if DestinationS3Client == nil {
-		return nil, errors.New("S3 client not initialized yet")
+		return nil, errors.New("destination S3 client not initialized yet")
 	}
 	return DestinationS3Client, nil
 }
@@ -98,7 +118,7 @@ func NewPresignClient(ctx context.Context) (*s3.PresignClient, error) {
 	}
 
 	// get the s3 client
-	s3Client, err := GetS3Client()
+	s3Client, err := GetSourceS3Client()
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +154,7 @@ func GetPresignedURL(ctx context.Context, bucketName, objectKey string) (string,
 }
 
 func GetBucketEncryptionKeyARN(ctx context.Context, bucketName string) (string, error) {
-	s3Client, err := GetS3Client()
+	s3Client, err := GetSourceS3Client()
 	if err != nil {
 		return "", err
 	}
@@ -179,7 +199,7 @@ func GetBucketEncryptionKeyARN(ctx context.Context, bucketName string) (string, 
 // ApplyTagToObject applies a single tag to an object in an S3 bucket
 func ApplyTagToObject(ctx context.Context, bucketName, objectKey, tagKey, tagValue string) error {
 	logger := log.FromContext(ctx)
-	s3Client, err := GetS3Client()
+	s3Client, err := GetSourceS3Client()
 	if err != nil {
 		return err
 	}
@@ -240,7 +260,7 @@ func ApplyTagToObject(ctx context.Context, bucketName, objectKey, tagKey, tagVal
 }
 
 func ObjectExists(ctx context.Context, bucketName, objectKey string) (bool, error) {
-	s3Client, err := GetS3Client()
+	s3Client, err := GetSourceS3Client()
 	if err != nil {
 		return false, err
 	}
@@ -262,7 +282,7 @@ func ObjectExists(ctx context.Context, bucketName, objectKey string) (bool, erro
 }
 
 func GetObject(ctx context.Context, bucketName, objectKey string) (*s3.GetObjectOutput, error) {
-	s3Client, err := GetS3Client()
+	s3Client, err := GetSourceS3Client()
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +294,7 @@ func GetObject(ctx context.Context, bucketName, objectKey string) (*s3.GetObject
 }
 
 func ListObjectsInPrefix(ctx context.Context, bucketName, prefix string) ([]s3types.Object, error) {
-	s3Client, err := GetS3Client()
+	s3Client, err := GetSourceS3Client()
 	if err != nil {
 		return nil, err
 	}

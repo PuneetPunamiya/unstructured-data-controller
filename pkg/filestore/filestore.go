@@ -59,7 +59,7 @@ func New(_ context.Context, rootPath string, s3Bucket string) (*FileStore, error
 	}
 
 	// generate s3 client
-	s3Client, err := awsclienthandler.GetS3Client()
+	s3Client, err := awsclienthandler.GetFileStoreS3Client()
 	if err != nil {
 		return nil, err
 	}

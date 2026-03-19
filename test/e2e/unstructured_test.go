@@ -96,7 +96,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// create AWS clients
-			err = awsclienthandler.NewS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+			err = awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
 				Region:          "us-east-1",
 				AccessKeyID:     "test",
 				SecretAccessKey: "test",
@@ -117,7 +117,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			s3Client, err := awsclienthandler.GetS3Client()
+			s3Client, err := awsclienthandler.GetSourceS3Client()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -220,7 +220,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 	feature.Assess("upload files to unstructured bucket and verify they land up in snowflake stage and ingested to snowflake table", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 		// create AWS clients for file operations
-		err := awsclienthandler.NewS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+		err := awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
 			Region:          "us-east-1",
 			AccessKeyID:     "test",
 			SecretAccessKey: "test",
@@ -240,7 +240,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			t.Error("no files found in the directory")
 		}
 
-		s3Client, err := awsclienthandler.GetS3Client()
+		s3Client, err := awsclienthandler.GetSourceS3Client()
 		if err != nil {
 			t.Error(err)
 		}
@@ -371,7 +371,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	feature.Assess("Deletion the file from the bucket and verifying in snowflake internal stage", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 		// create a new s3 client
 		t.Log("Creating s3 client ...")
-		err := awsclienthandler.NewS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+		err := awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
 			Region:          "us-east-1",
 			AccessKeyID:     "test",
 			SecretAccessKey: "test",
@@ -381,7 +381,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			t.Error(err)
 		}
 
-		s3Client, err := awsclienthandler.GetS3Client()
+		s3Client, err := awsclienthandler.GetSourceS3Client()
 		if err != nil {
 			t.Error(err)
 		}
