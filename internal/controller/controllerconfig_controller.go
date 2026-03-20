@@ -139,58 +139,51 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ingestionBucket, dataStorageBucket, cacheDirectory))
 
 	sourceAwsEndpoint := string(unstructuredSecret.Data["SOURCE_AWS_ENDPOINT"])
-	if sourceAwsEndpoint != "" {
-		// generate AWS clients now
-		awsConfig := awsclienthandler.AWSConfig{
-			Region:          string(unstructuredSecret.Data["SOURCE_AWS_REGION"]),
-			AccessKeyID:     string(unstructuredSecret.Data["SOURCE_AWS_ACCESS_KEY_ID"]),
-			SecretAccessKey: string(unstructuredSecret.Data["SOURCE_AWS_SECRET_ACCESS_KEY"]),
-			SessionToken:    string(unstructuredSecret.Data["SOURCE_AWS_SESSION_TOKEN"]),
-			Endpoint:        sourceAwsEndpoint,
-		}
-		if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsConfig); err != nil {
-			return ctrl.Result{}, err
-		}
-		logger.Info("SQS client created ...")
-		if err := awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsConfig); err != nil {
-			return ctrl.Result{}, err
-		}
-		logger.Info("S3 client created ...")
-		if _, err := awsclienthandler.NewPresignClient(ctx); err != nil {
-			return ctrl.Result{}, err
-		}
-		logger.Info("Presign client created ...")
+	awsConfig := awsclienthandler.AWSConfig{
+		Region:          string(unstructuredSecret.Data["SOURCE_AWS_REGION"]),
+		AccessKeyID:     string(unstructuredSecret.Data["SOURCE_AWS_ACCESS_KEY_ID"]),
+		SecretAccessKey: string(unstructuredSecret.Data["SOURCE_AWS_SECRET_ACCESS_KEY"]),
+		SessionToken:    string(unstructuredSecret.Data["SOURCE_AWS_SESSION_TOKEN"]),
+		Endpoint:        sourceAwsEndpoint,
 	}
+	if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsConfig); err != nil {
+		return ctrl.Result{}, err
+	}
+	logger.Info("SQS client created ...")
+	if err := awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsConfig); err != nil {
+		return ctrl.Result{}, err
+	}
+	logger.Info("S3 client created ...")
+	if _, err := awsclienthandler.NewPresignClient(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+	logger.Info("Presign client created ...")
 
 	destinationAwsEndpoint := string(unstructuredSecret.Data["DESTINATION_AWS_ENDPOINT"])
-	if destinationAwsEndpoint != "" {
-		awsConfig := awsclienthandler.AWSConfig{
-			Region:          string(unstructuredSecret.Data["DESTINATION_AWS_REGION"]),
-			AccessKeyID:     string(unstructuredSecret.Data["DESTINATION_AWS_ACCESS_KEY_ID"]),
-			SecretAccessKey: string(unstructuredSecret.Data["DESTINATION_AWS_SECRET_ACCESS_KEY"]),
-			SessionToken:    string(unstructuredSecret.Data["DESTINATION_AWS_SESSION_TOKEN"]),
-			Endpoint:        destinationAwsEndpoint,
-		}
-		if err := awsclienthandler.NewDestinationS3ClientFromConfig(ctx, &awsConfig); err != nil {
-			return ctrl.Result{}, err
-		}
-		logger.Info("Destination S3 client created ...")
+	destAwsConfig := awsclienthandler.AWSConfig{
+		Region:          string(unstructuredSecret.Data["DESTINATION_AWS_REGION"]),
+		AccessKeyID:     string(unstructuredSecret.Data["DESTINATION_AWS_ACCESS_KEY_ID"]),
+		SecretAccessKey: string(unstructuredSecret.Data["DESTINATION_AWS_SECRET_ACCESS_KEY"]),
+		SessionToken:    string(unstructuredSecret.Data["DESTINATION_AWS_SESSION_TOKEN"]),
+		Endpoint:        destinationAwsEndpoint,
 	}
+	if err := awsclienthandler.NewDestinationS3ClientFromConfig(ctx, &destAwsConfig); err != nil {
+		return ctrl.Result{}, err
+	}
+	logger.Info("Destination S3 client created ...")
 
 	fileStoreAwsEndpoint := string(unstructuredSecret.Data["FILE_STORE_AWS_ENDPOINT"])
-	if fileStoreAwsEndpoint != "" {
-		awsConfig := awsclienthandler.AWSConfig{
-			Region:          string(unstructuredSecret.Data["FILE_STORE_AWS_REGION"]),
-			AccessKeyID:     string(unstructuredSecret.Data["FILE_STORE_AWS_ACCESS_KEY_ID"]),
-			SecretAccessKey: string(unstructuredSecret.Data["FILE_STORE_AWS_SECRET_ACCESS_KEY"]),
-			SessionToken:    string(unstructuredSecret.Data["FILE_STORE_AWS_SESSION_TOKEN"]),
-			Endpoint:        fileStoreAwsEndpoint,
-		}
-		if err := awsclienthandler.NewFileStoreS3ClientFromConfig(ctx, &awsConfig); err != nil {
-			return ctrl.Result{}, err
-		}
-		logger.Info("File store S3 client created ...")
+	fileStoreAwsConfig := awsclienthandler.AWSConfig{
+		Region:          string(unstructuredSecret.Data["FILE_STORE_AWS_REGION"]),
+		AccessKeyID:     string(unstructuredSecret.Data["FILE_STORE_AWS_ACCESS_KEY_ID"]),
+		SecretAccessKey: string(unstructuredSecret.Data["FILE_STORE_AWS_SECRET_ACCESS_KEY"]),
+		SessionToken:    string(unstructuredSecret.Data["FILE_STORE_AWS_SESSION_TOKEN"]),
+		Endpoint:        fileStoreAwsEndpoint,
 	}
+	if err := awsclienthandler.NewFileStoreS3ClientFromConfig(ctx, &fileStoreAwsConfig); err != nil {
+		return ctrl.Result{}, err
+	}
+	logger.Info("File store S3 client created ...")
 
 	snowflakePrivateKey := unstructuredSecret.Data["SNOWFLAKE_PRIVATE_KEY"]
 	snowflakeConfig := config.Spec.SnowflakeConfig
