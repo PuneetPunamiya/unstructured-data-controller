@@ -56,6 +56,11 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 	sourceFileMap := map[string]bool{}
 
 	for _, object := range objects {
+		// skip S3 folder marker objects (keys ending with "/") — storing these
+		// as regular files would block directory creation for real files underneath
+		if strings.HasSuffix(*object.Key, "/") {
+			continue
+		}
 		file := RawFileMetadata{
 			FilePath: *object.Key,
 			UID:      *object.ETag,

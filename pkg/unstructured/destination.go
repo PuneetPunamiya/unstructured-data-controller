@@ -42,7 +42,11 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 	rows := []row{}
 	err := d.Client.ListFilesFromStage(ctx, d.Role, d.Database, d.Schema, d.Stage, &rows)
 	if err != nil {
-		return err
+		// The SELECT $1 query fails when non-JSON files exist in the stage
+		// (e.g. manually uploaded test data). Log the error and proceed with
+		// an empty stage — all local files will be re-uploaded (PUT uses
+		// OVERWRITE=TRUE) and no extra-file cleanup will happen this cycle.
+		logger.Error(err, "failed to list files from stage, will re-upload all files")
 	}
 
 	// map of raw file path to embeddings file
@@ -52,7 +56,8 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 		embeddingsFile := EmbeddingsFile{}
 		err := json.Unmarshal([]byte(row.Data), &embeddingsFile)
 		if err != nil {
-			return err
+			logger.Info("skipping non-embeddings file in stage", "error", err)
+			continue
 		}
 		if embeddingsFile.ConvertedDocument != nil &&
 			embeddingsFile.ConvertedDocument.Metadata != nil &&
