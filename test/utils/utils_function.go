@@ -87,6 +87,13 @@ func GetUnstructuredDataProductResource(name, namespace string) v1alpha1.Unstruc
 			},
 			DestinationConfig: v1alpha1.DestinationConfig{
 				Type: v1alpha1.DestinationTypeInternalStage,
+				Artifacts: []v1alpha1.ArtifactConfig{
+					{
+						Type: "stage",
+						Name: "chunksGeneratorConfig",
+						Path: "chunks",
+					},
+				},
 				SnowflakeInternalStageConfig: v1alpha1.SnowflakeInternalStageConfig{
 					Database: "unstructured_db",
 					Schema:   "unstructured",

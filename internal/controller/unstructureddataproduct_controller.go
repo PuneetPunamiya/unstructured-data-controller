@@ -40,6 +40,9 @@ import (
 
 const (
 	UnstructuredDataProductControllerName = "UnstructuredDataProduct"
+	ArtifactNameDocumentProcessor         = "documentProcessorConfig"
+	ArtifactNameChunksGenerator           = "chunksGeneratorConfig"
+	ArtifactNameVectorEmbeddings          = "vectorEmbeddingsGeneratorConfig"
 )
 
 var (
@@ -227,7 +230,6 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	logger.Info("successfully stored files to filestore", "files", storedFiles)
 
-	// add force reconcile label to the DocumentProcessor CR
 	documentProcessorKey := client.ObjectKey{
 		Namespace: unstructuredDataProductCR.Namespace,
 		Name:      dataProductName,
@@ -242,6 +244,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
+	logger.Info("triggered DocumentProcessor for unprocessed files")
 
 	// Setup destination
 	var destination unstructured.Destination
@@ -254,7 +257,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		}
 	case operatorv1alpha1.TypeS3:
 		var err error
-		destination, err = setupS3Destination(unstructuredDataProductCR, dataProductName)
+		destination, err = setupS3Destination(ctx, unstructuredDataProductCR, dataProductName)
 		if err != nil {
 			if IsAWSClientNotInitializedError(err) {
 				logger.Info("ControllerConfig has not initialized destination S3 client yet, will try again in a bit ...")
@@ -268,22 +271,28 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	// list all files in the filestore for the data product
+	// list files to check if processing is needed
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
-		logger.Error(err, "failed to list files in path")
+		logger.Error(err, "failed to list files in path for checking processing needs")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
-	// extract the vector embeddings files that are to be ingested to destination
-	filterEmbeddingsFiles := unstructured.FilterVectorEmbeddingsFilePaths(filePaths)
-	logger.Info("files to ingest to destination", "files", filterEmbeddingsFiles)
 
-	// ingest the embeddings files to destination
-	if err := destination.SyncFilesToDestination(ctx, r.fileStore, filterEmbeddingsFiles); err != nil {
-		logger.Error(err, "failed to ingest embeddings files to destination")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+	// collect files to sync based on syncToDestination flags
+	filesToSync := buildDestinationSyncFilePaths(ctx, unstructuredDataProductCR, filePaths)
+
+	logger.Info("files to ingest to destination", "files", filesToSync, "total", len(filesToSync))
+
+	// ingest the files to destination
+	if len(filesToSync) > 0 {
+		if err := destination.SyncFilesToDestination(ctx, r.fileStore, filesToSync); err != nil {
+			logger.Error(err, "failed to ingest files to destination")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+		logger.Info("successfully ingested files to destination")
+	} else {
+		logger.Info("no files to sync to destination based on syncToDestination flags")
 	}
-	logger.Info("successfully ingested embeddings files to destination")
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
@@ -302,6 +311,25 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}, nil
 }
 
+// buildArtifactPathMap builds a map from file suffix to artifact path based on the artifacts configuration
+func buildArtifactPathMap(ctx context.Context, artifacts []operatorv1alpha1.ArtifactConfig) map[string]string {
+	logger := log.FromContext(ctx)
+	artifactPathMap := make(map[string]string)
+	for _, artifact := range artifacts {
+		switch artifact.Name {
+		case ArtifactNameDocumentProcessor:
+			artifactPathMap[unstructured.ConvertedFileSuffix] = artifact.Path
+		case ArtifactNameChunksGenerator:
+			artifactPathMap[unstructured.ChunksFileSuffix] = artifact.Path
+		case ArtifactNameVectorEmbeddings:
+			artifactPathMap[unstructured.VectorEmbeddingsFileSuffix] = artifact.Path
+		default:
+			logger.Info("unknown artifact name, skipping", "name", artifact.Name)
+		}
+	}
+	return artifactPathMap
+}
+
 // setupSnowflakeDestination returns a Snowflake internal stage destination for the given CR.
 func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct) (unstructured.Destination, error) {
 	logger := log.FromContext(ctx)
@@ -311,28 +339,57 @@ func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx contex
 		return nil, err
 	}
 	r.sf = sf
+
 	return &unstructured.SnowflakeInternalStage{
-		Client:   sf,
-		Role:     sf.GetRole(),
-		Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
-		Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
-		Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		Client:          sf,
+		Role:            sf.GetRole(),
+		Stage:           unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
+		Database:        unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
+		Schema:          unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		ArtifactPathMap: buildArtifactPathMap(ctx, unstructuredDataProductCR.Spec.DestinationConfig.Artifacts),
 	}, nil
 }
 
 // setupS3Destination returns an S3 destination for the given CR
-func setupS3Destination(unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, dataProductName string) (unstructured.Destination, error) {
+func setupS3Destination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, dataProductName string) (unstructured.Destination, error) {
 	destCfg := unstructuredDataProductCR.Spec.DestinationConfig.S3DestinationConfig
 	destinationS3Client, err := awsclienthandler.GetDestinationS3Client()
 	if err != nil {
 		return nil, err
 	}
+
 	return &unstructured.S3Destination{
 		S3Client:        destinationS3Client,
 		Bucket:          destCfg.Bucket,
 		Prefix:          destCfg.Prefix,
 		DataProductName: dataProductName,
+		ArtifactPathMap: buildArtifactPathMap(ctx, unstructuredDataProductCR.Spec.DestinationConfig.Artifacts),
 	}, nil
+}
+
+func buildDestinationSyncFilePaths(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, filePaths []string) []string {
+	var filesToSync []string
+	logger := log.FromContext(ctx)
+
+	// Iterate through artifacts configuration to determine which files to sync
+	for _, artifact := range unstructuredDataProductCR.Spec.DestinationConfig.Artifacts {
+		var filteredFiles []string
+
+		switch artifact.Name {
+		case ArtifactNameDocumentProcessor:
+			filteredFiles = unstructured.FilterConvertedFilePaths(filePaths)
+		case ArtifactNameChunksGenerator:
+			filteredFiles = unstructured.FilterChunksFilePaths(filePaths)
+		case ArtifactNameVectorEmbeddings:
+			filteredFiles = unstructured.FilterVectorEmbeddingsFilePaths(filePaths)
+		default:
+			logger.Info("unknown artifact name, skipping", "name", artifact.Name)
+		}
+
+		filesToSync = append(filesToSync, filteredFiles...)
+	}
+
+	return filesToSync
 }
 
 // SetupWithManager sets up the controller with the Manager.

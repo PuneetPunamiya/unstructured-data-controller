@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -17,138 +18,121 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const (
+	// Default artifact paths for destination sync
+	DefaultProcessedDocumentsPath = "processed-documents"
+	DefaultChunksPath             = "chunks"
+	DefaultVectorEmbeddingsPath   = "vector-embeddings"
+)
+
 type Destination interface {
 	// SyncFilesToDestination will sync the data to the destination
 	SyncFilesToDestination(ctx context.Context, fs *filestore.FileStore, filePaths []string) error
 }
 
 type SnowflakeInternalStage struct {
-	Client   *snowflake.Client
-	Role     string
-	Database string
-	Schema   string
-	Stage    string
+	Client          *snowflake.Client
+	Role            string
+	Database        string
+	Schema          string
+	Stage           string
+	ArtifactPathMap map[string]string // map[fileSuffix]artifactPath for stages structure
 }
 
 func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
-	fs *filestore.FileStore, embeddingsFilePaths []string) error {
+	fs *filestore.FileStore, filePaths []string) error {
 	logger := log.FromContext(ctx)
-	logger.Info("ingesting data to snowflake internal stage", "filePaths", embeddingsFilePaths)
+	logger.Info("ingesting data to snowflake internal stage", "filePaths", filePaths)
 
-	// get file name and uid for all files in the stage
+	// get all files currently in the stage
 	type row struct {
-		Data string `db:"data"`
+		Filename string `db:"filename"`
+		Data     string `db:"data"`
 	}
 	rows := []row{}
 	err := d.Client.ListFilesFromStage(ctx, d.Role, d.Database, d.Schema, d.Stage, &rows)
 	if err != nil {
-		// The SELECT $1 query fails when non-JSON files exist in the stage
+		// The query fails when non-JSON files exist in the stage
 		// (e.g. manually uploaded test data). Log the error and proceed with
 		// an empty stage — all local files will be re-uploaded (PUT uses
 		// OVERWRITE=TRUE) and no extra-file cleanup will happen this cycle.
 		logger.Error(err, "failed to list files from stage, will re-upload all files")
 	}
 
-	// map of raw file path to embeddings file
-	embeddingsFilesInStage := make(map[string]EmbeddingsFile)
-	embeddingsFilesList := []string{}
+	// map of stage path to file data (JSON string) in stage
+	filesInStage := make(map[string]string)
 	for _, row := range rows {
-		embeddingsFile := EmbeddingsFile{}
-		err := json.Unmarshal([]byte(row.Data), &embeddingsFile)
-		if err != nil {
-			logger.Info("skipping non-embeddings file in stage", "error", err)
-			continue
-		}
-		if embeddingsFile.ConvertedDocument != nil &&
-			embeddingsFile.ConvertedDocument.Metadata != nil &&
-			embeddingsFile.ConvertedDocument.Metadata.RawFilePath != "" {
-			embeddingsFilesInStage[embeddingsFile.ConvertedDocument.Metadata.RawFilePath] = embeddingsFile
-			embeddingsFilesList = append(embeddingsFilesList, embeddingsFile.ConvertedDocument.Metadata.RawFilePath)
+		// Normalize Snowflake filename to match our stagePath format
+		// Snowflake returns: path/to/file.json/file.json.gz
+		// We need: path/to/file.json
+		if row.Filename != "" {
+			normalizedPath := normalizeSnowflakeFilename(row.Filename)
+			filesInStage[normalizedPath] = row.Data
 		}
 	}
 
-	logger.Info("files currently in the snowflake internal stage", "files", embeddingsFilesList)
-	logger.Info("list of files in the local file store to be stored", "files", embeddingsFilePaths)
-	errorList := []error{}
-	for _, embeddingsFilePathInFilestore := range embeddingsFilePaths {
-		// read the file from filestore
-		embeddingsFileBytesInFilestore, err := fs.Retrieve(ctx, embeddingsFilePathInFilestore)
-		if err != nil {
-			logger.Error(err, "failed to retrieve file from filestore", "file", embeddingsFilePathInFilestore)
-			errorList = append(errorList, err)
-		}
+	logger.Info("files currently in the snowflake internal stage", "count", len(filesInStage))
+	logger.Info("list of files in the local file store to be stored", "files", filePaths)
 
-		embeddingsFileInFilestore := EmbeddingsFile{}
-		err = json.Unmarshal(embeddingsFileBytesInFilestore, &embeddingsFileInFilestore)
+	errorList := []error{}
+	for _, filePathInFilestore := range filePaths {
+		// read the file from filestore
+		fileBytesInFilestore, err := fs.Retrieve(ctx, filePathInFilestore)
 		if err != nil {
-			logger.Error(err, "failed to unmarshal file", "file", embeddingsFilePathInFilestore)
+			logger.Error(err, "failed to retrieve file from filestore", "file", filePathInFilestore)
 			errorList = append(errorList, err)
 			continue
 		}
 
-		// check if embeddings file already exists in the stage
-		if _, exists := embeddingsFilesInStage[embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath]; exists {
-			logger.Info("file already exists in the stage",
-				"file", embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath)
+		// Calculate stage path for this file
+		stagePath := d.stagePathForFile(filePathInFilestore)
 
-			embeddingsFileInStage := embeddingsFilesInStage[embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath]
+		// Check if file already exists in the stage
+		if existingFileData, exists := filesInStage[stagePath]; exists {
+			logger.Info("file already exists in the stage", "file", stagePath)
 
-			// delete the file from the map as we will use this map to delete extra files from the stage
-			delete(embeddingsFilesInStage, embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath)
+			// Mark as processed (will be removed from deletion list)
+			delete(filesInStage, stagePath)
 
-			if embeddingsFileInStage.EmbeddingDocument.Metadata.Equal(embeddingsFileInFilestore.EmbeddingDocument.Metadata) {
-				logger.Info("file is already in the stage and the configuration is the same, skipping ...",
-					"file", embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath)
-				// nothing to do, file is already in the stage
+			// Compare metadata based on file type to see if upload is needed
+			if filesAreEqual(filePathInFilestore, existingFileData, fileBytesInFilestore) {
+				logger.Info("file metadata unchanged, skipping upload", "file", stagePath)
 				continue
 			}
 		}
 
-		// upload the file to the stage
-
-		// this is needed to pass the file stream to the snowflake client without creating a local temporary file
-		streamCtx := gosnowflake.WithFileStream(ctx, bytes.NewReader(embeddingsFileBytesInFilestore))
-
+		// Upload the file to the stage
+		streamCtx := gosnowflake.WithFileStream(ctx, bytes.NewReader(fileBytesInFilestore))
 		fileRows := []snowflake.UploadedFileStatus{}
 
 		if err := d.Client.Put(streamCtx,
 			d.Role,
-			// this file path does not matter as we are using the stream context to pass the file stream to the snowflake client
-			embeddingsFilePathInFilestore,
-			// database name is the database name
+			filePathInFilestore,
 			d.Database,
-			// schema name is the data product name
 			d.Schema,
-			// stage name is the internal stage name
 			d.Stage,
-			// subpath is the file name
-			embeddingsFilePathInFilestore,
+			stagePath,
 			&fileRows); err != nil {
-			logger.Error(err, "failed to upload file to snowflake internal stage", "file", embeddingsFilePathInFilestore)
+			logger.Error(err, "failed to upload file to snowflake internal stage", "file", stagePath)
 			errorList = append(errorList, err)
 			continue
 		}
-		logger.Info("successfully uploaded file to snowflake internal stage",
-			"file", embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath)
+		logger.Info("successfully uploaded file to snowflake internal stage", "file", stagePath)
 
 		if len(fileRows) == 0 {
-			logger.Error(fmt.Errorf("no file rows returned while uploading file to snowflake internal stage: %s",
-				embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath),
-				"file", embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath)
+			logger.Error(fmt.Errorf("no file rows returned while uploading file to snowflake internal stage: %s", stagePath),
+				"file", stagePath)
 			errorList = append(errorList,
-				fmt.Errorf("no file rows returned while uploading file to snowflake internal stage: %s",
-					embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath))
+				fmt.Errorf("no file rows returned while uploading file to snowflake internal stage: %s", stagePath))
 			continue
 		}
 	}
 
-	// delete extra files which are the files in the stage that are not present in the filestore
-	// at this point, whatever is left in the filesInStage map are the extra files that need to be deleted
-
-	extraFiles := make([]string, 0, len(embeddingsFilesInStage))
-	for extraFilePath := range embeddingsFilesInStage {
-		logger.Info("found extra file in the stage, marking for deletion", "file", extraFilePath)
-		extraFiles = append(extraFiles, extraFilePath)
+	// Delete extra files that are in the stage but not in filestore
+	extraFiles := make([]string, 0, len(filesInStage))
+	for stagePath := range filesInStage {
+		logger.Info("found extra file in the stage, marking for deletion", "file", stagePath)
+		extraFiles = append(extraFiles, stagePath)
 	}
 
 	if err := d.Client.DeleteFilesFromStage(ctx, d.Role, d.Database, d.Schema, d.Stage, extraFiles); err != nil {
@@ -163,12 +147,130 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 	return nil
 }
 
-// S3Destination syncs chunk files to an S3 bucket (e.g. LocalStack or AWS).
+// normalizeSnowflakeFilename converts Snowflake's internal filename format to our expected format.
+// Snowflake stores files as: path/to/file.json/file.json.gz
+// We need: path/to/file.json
+func normalizeSnowflakeFilename(snowflakeFilename string) string {
+	// Find last slash
+	lastSlashIdx := strings.LastIndex(snowflakeFilename, "/")
+	if lastSlashIdx == -1 {
+		// No slash, return as-is
+		return snowflakeFilename
+	}
+
+	// Get the part before the last slash
+	pathWithoutLast := snowflakeFilename[:lastSlashIdx]
+
+	// Get the last part (should be basename.gz)
+	lastPart := snowflakeFilename[lastSlashIdx+1:]
+
+	// Remove .gz suffix if present
+	expectedBasename := strings.TrimSuffix(lastPart, ".gz")
+
+	// Verify that pathWithoutLast ends with expectedBasename
+	if strings.HasSuffix(pathWithoutLast, expectedBasename) {
+		return pathWithoutLast
+	}
+
+	// If it doesn't match expected pattern, return original
+	return snowflakeFilename
+}
+
+// getArtifactPathForFile determines the artifact path for a file based on its suffix
+// Returns the configured path from artifactPathMap or a default path
+func getArtifactPathForFile(filePathInFilestore string, artifactPathMap map[string]string) string {
+	var suffix, defaultPath string
+
+	if strings.HasSuffix(filePathInFilestore, ConvertedFileSuffix) {
+		suffix = ConvertedFileSuffix
+		defaultPath = DefaultProcessedDocumentsPath
+	} else if strings.HasSuffix(filePathInFilestore, ChunksFileSuffix) {
+		suffix = ChunksFileSuffix
+		defaultPath = DefaultChunksPath
+	} else if strings.HasSuffix(filePathInFilestore, VectorEmbeddingsFileSuffix) {
+		suffix = VectorEmbeddingsFileSuffix
+		defaultPath = DefaultVectorEmbeddingsPath
+	} else {
+		return ""
+	}
+
+	if path, ok := artifactPathMap[suffix]; ok && path != "" {
+		return path
+	}
+	return defaultPath
+}
+
+// filesAreEqual compares files based on their type and returns true if metadata is unchanged
+func filesAreEqual(filePath string, existingData string, newData []byte) bool {
+	if strings.HasSuffix(filePath, VectorEmbeddingsFileSuffix) {
+		var existing, incoming EmbeddingsFile
+		if json.Unmarshal([]byte(existingData), &existing) == nil &&
+			json.Unmarshal(newData, &incoming) == nil &&
+			existing.EmbeddingDocument != nil && incoming.EmbeddingDocument != nil &&
+			existing.EmbeddingDocument.Metadata != nil && incoming.EmbeddingDocument.Metadata != nil {
+			return existing.EmbeddingDocument.Metadata.Equal(incoming.EmbeddingDocument.Metadata)
+		}
+	} else if strings.HasSuffix(filePath, ChunksFileSuffix) {
+		var existing, incoming ChunksFile
+		if json.Unmarshal([]byte(existingData), &existing) == nil &&
+			json.Unmarshal(newData, &incoming) == nil &&
+			existing.ChunksDocument != nil && incoming.ChunksDocument != nil &&
+			existing.ChunksDocument.Metadata != nil && incoming.ChunksDocument.Metadata != nil {
+			return existing.ChunksDocument.Metadata.Equal(incoming.ChunksDocument.Metadata)
+		}
+	} else if strings.HasSuffix(filePath, ConvertedFileSuffix) {
+		var existing, incoming ConvertedFile
+		if json.Unmarshal([]byte(existingData), &existing) == nil &&
+			json.Unmarshal(newData, &incoming) == nil &&
+			existing.ConvertedDocument != nil && incoming.ConvertedDocument != nil &&
+			existing.ConvertedDocument.Metadata != nil && incoming.ConvertedDocument.Metadata != nil {
+			return existing.ConvertedDocument.Metadata.Equal(incoming.ConvertedDocument.Metadata)
+		}
+	}
+	return false
+}
+
+// stagePathForFile builds the stage path with stages subdirectory for Snowflake
+// Format: {dataProductPrefix}/stages/{artifact-path}/{filename}
+// Example: testproduct/stages/chunks/test.pdf-chunks.json
+func (d *SnowflakeInternalStage) stagePathForFile(filePathInFilestore string) string {
+	baseName := filepath.Base(filePathInFilestore)
+
+	// Extract prefix from filePathInFilestore (everything before the last /)
+	// filePathInFilestore example: "testunstructureddataproduct/12.pdf-converted.json"
+	// We want to preserve: "testunstructureddataproduct"
+	var dataProductPrefix string
+	if idx := strings.LastIndex(filePathInFilestore, "/"); idx != -1 {
+		dataProductPrefix = filePathInFilestore[:idx]
+	}
+
+	// Determine artifact path based on file suffix
+	artifactPath := getArtifactPathForFile(filePathInFilestore, d.ArtifactPathMap)
+
+	// Build path: {dataProductPrefix}/stages/{artifact-path}/{filename}
+	var stagePath string
+	if dataProductPrefix != "" && artifactPath != "" {
+		stagePath = filepath.Join(dataProductPrefix, "stages", artifactPath, baseName)
+	} else if artifactPath != "" {
+		stagePath = filepath.Join("stages", artifactPath, baseName)
+	} else {
+		stagePath = baseName
+	}
+
+	if filepath.Separator != '/' {
+		stagePath = filepath.ToSlash(stagePath)
+	}
+	return stagePath
+}
+
+// S3Destination syncs processed JSON artifacts to an S3 bucket (converted, chunks,
+// and vector embeddings — whichever paths the controller passes, based on artifacts configuration).
 type S3Destination struct {
 	S3Client        *s3.Client
 	Bucket          string
 	Prefix          string
-	DataProductName string // used as default prefix when Prefix is empty (CR name)
+	DataProductName string            // used as default prefix when Prefix is empty (CR name)
+	ArtifactPathMap map[string]string // map[fileSuffix]artifactPath for stages structure
 }
 
 func (d *S3Destination) getPrefix() string {
@@ -178,15 +280,23 @@ func (d *S3Destination) getPrefix() string {
 	return d.DataProductName
 }
 
-// s3KeyForChunksFile returns the S3 object key for a chunks file path
-// When Prefix is not set, uses DataProductName/file_name as default.
-func (d *S3Destination) s3KeyForChunksFile(chunksFilePath string) string {
-	baseName := filepath.Base(chunksFilePath)
+// s3KeyForFile maps a filestore object key to an S3 object key.
+// Format: {prefix}/stages/{artifact-path}/{filename}
+func (d *S3Destination) s3KeyForFile(filePathInFilestore string) string {
 	prefix := d.getPrefix()
-	key := baseName
+	baseName := filepath.Base(filePathInFilestore)
+
+	// Determine artifact path based on file suffix
+	artifactPath := getArtifactPathForFile(filePathInFilestore, d.ArtifactPathMap)
+
+	// Build path: prefix/stages/{artifact-path}/{filename}
+	var key string
 	if prefix != "" {
-		key = filepath.Join(prefix, baseName)
+		key = filepath.Join(prefix, "stages", artifactPath, baseName)
+	} else {
+		key = filepath.Join("stages", artifactPath, baseName)
 	}
+
 	if filepath.Separator != '/' {
 		key = filepath.ToSlash(key)
 	}
@@ -194,10 +304,10 @@ func (d *S3Destination) s3KeyForChunksFile(chunksFilePath string) string {
 }
 
 func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestore.FileStore,
-	chunksFilePaths []string) error {
+	filePaths []string) error {
 	logger := log.FromContext(ctx)
 	logger.Info("syncing data to S3 destination",
-		"bucket", d.Bucket, "prefix", d.getPrefix(), "filePaths", chunksFilePaths)
+		"bucket", d.Bucket, "prefix", d.getPrefix(), "filePaths", filePaths)
 
 	s3Client := d.S3Client
 	if s3Client == nil {
@@ -226,14 +336,14 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 		}
 	}
 
-	for _, chunksFilePath := range chunksFilePaths {
-		data, err := fs.Retrieve(ctx, chunksFilePath)
+	for _, filePath := range filePaths {
+		data, err := fs.Retrieve(ctx, filePath)
 		if err != nil {
-			logger.Error(err, "failed to retrieve file from filestore", "file", chunksFilePath)
-			return fmt.Errorf("retrieve %s: %w", chunksFilePath, err)
+			logger.Error(err, "failed to retrieve file from filestore", "file", filePath)
+			return fmt.Errorf("retrieve %s: %w", filePath, err)
 		}
 
-		key := d.s3KeyForChunksFile(chunksFilePath)
+		key := d.s3KeyForFile(filePath)
 		delete(keysInDestination, key)
 
 		// Check if file exists and compare ETag (MD5) to skip unchanged files
@@ -246,7 +356,7 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 			localMD5 := fmt.Sprintf("\"%x\"", md5.Sum(data))
 			if localMD5 == *headResp.ETag {
 				logger.Info("file unchanged, skipping upload",
-					"file", chunksFilePath, "key", key)
+					"file", filePath, "key", key)
 				continue
 			}
 		}
