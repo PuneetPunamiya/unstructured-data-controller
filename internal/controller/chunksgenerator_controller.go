@@ -130,6 +130,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	skippedFiles := []string{}
 
 	convertedFilePaths := unstructured.FilterConvertedFilePaths(filePaths)
+	hadFilesToProcess := len(convertedFilePaths) > 0
 
 	for _, convertedFilePath := range convertedFilePaths {
 		logger.Info("processing converted file", "file", convertedFilePath)
@@ -171,6 +172,26 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}); err != nil {
 		logger.Error(err, "failed to add force reconcile label to VectorEmbeddingsGenerator CR")
 		return r.handleError(ctx, chunksGeneratorCR, err)
+	}
+
+	// trigger UnstructuredDataProduct if:
+	// Had files to process and successfully processed (no errors/skips)
+	if hadFilesToProcess && len(chunkingErrors) == 0 && len(skippedFiles) == 0 {
+		unstructuredDataProductKey := client.ObjectKey{
+			Namespace: chunksGeneratorCR.Namespace,
+			Name:      chunksGeneratorCR.Spec.DataProduct,
+		}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			unstructuredDataProductCR := &operatorv1alpha1.UnstructuredDataProduct{}
+			if err := r.Get(ctx, unstructuredDataProductKey, unstructuredDataProductCR); err != nil {
+				return err
+			}
+			return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProductCR)
+		}); err != nil {
+			logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
+			return r.handleError(ctx, chunksGeneratorCR, err)
+		}
+		logger.Info("triggered UnstructuredDataProduct to sync chunks files")
 	}
 
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)

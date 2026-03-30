@@ -126,6 +126,9 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	r.fileStore = fs
 
+	// track if jobs existed at the start of reconcile to know if files were created
+	hadJobsAtStart := len(documentProcessorCR.Status.Jobs) > 0
+
 	// first, let's figure out the jobs that are currently running
 	jobProcessingErrors := []error{}
 	for _, job := range documentProcessorCR.Status.Jobs {
@@ -185,6 +188,26 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	logger.Info("all jobs are completed, no need to requeue")
+
+	// trigger UnstructuredDataProduct if:
+	// Jobs existed at start and are now complete (files were created this reconcile)
+	if hadJobsAtStart {
+		unstructuredDataProductKey := client.ObjectKey{
+			Namespace: documentProcessorCR.Namespace,
+			Name:      documentProcessorCR.Spec.DataProduct,
+		}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			unstructuredDataProductCR := &operatorv1alpha1.UnstructuredDataProduct{}
+			if err := r.Get(ctx, unstructuredDataProductKey, unstructuredDataProductCR); err != nil {
+				return err
+			}
+			return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProductCR)
+		}); err != nil {
+			logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
+			return r.handleError(ctx, documentProcessorCR, err)
+		}
+		logger.Info("triggered UnstructuredDataProduct to sync converted files")
+	}
 
 	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", latestDocumentProcessorCR.Name)
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
