@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,6 +41,9 @@ import (
 
 const (
 	UnstructuredDataProductControllerName = "UnstructuredDataProduct"
+	ArtifactNameDocumentProcessor         = "documentProcessorConfig"
+	ArtifactNameChunksGenerator           = "chunksGeneratorConfig"
+	ArtifactNameVectorEmbeddings          = "vectorEmbeddingsGeneratorConfig"
 )
 
 var (
@@ -227,7 +231,6 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	logger.Info("successfully stored files to filestore", "files", storedFiles)
 
-	// add force reconcile label to the DocumentProcessor CR
 	documentProcessorKey := client.ObjectKey{
 		Namespace: unstructuredDataProductCR.Namespace,
 		Name:      dataProductName,
@@ -242,19 +245,20 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
+	logger.Info("triggered DocumentProcessor for unprocessed files")
 
 	// Setup destination
 	var destination unstructured.Destination
 	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
 	case operatorv1alpha1.DestinationTypeInternalStage:
 		var err error
-		destination, err = r.setupSnowflakeDestination(ctx, unstructuredDataProductCR)
+		destination, err = r.setupSnowflakeDestination(ctx, unstructuredDataProductCR, dataProductName)
 		if err != nil {
 			return r.handleError(ctx, unstructuredDataProductCR, err)
 		}
 	case operatorv1alpha1.TypeS3:
 		var err error
-		destination, err = setupS3Destination(unstructuredDataProductCR, dataProductName)
+		destination, err = setupS3Destination(ctx, unstructuredDataProductCR, dataProductName)
 		if err != nil {
 			if IsAWSClientNotInitializedError(err) {
 				logger.Info("ControllerConfig has not initialized destination S3 client yet, will try again in a bit ...")
@@ -268,22 +272,27 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	// list all files in the filestore for the data product
+	// list files to check if processing is needed
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
-		logger.Error(err, "failed to list files in path")
+		logger.Error(err, "failed to list files in path for checking processing needs")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
-	// extract the vector embeddings files that are to be ingested to destination
-	filterEmbeddingsFiles := unstructured.FilterVectorEmbeddingsFilePaths(filePaths)
-	logger.Info("files to ingest to destination", "files", filterEmbeddingsFiles)
 
-	// ingest the embeddings files to destination
-	if err := destination.SyncFilesToDestination(ctx, r.fileStore, filterEmbeddingsFiles); err != nil {
-		logger.Error(err, "failed to ingest embeddings files to destination")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+	artifactFileGroups := buildDestinationPath(ctx, *unstructuredDataProductCR, filePaths)
+
+	logger.Info("files to ingest to destination", "artifactGroups", len(artifactFileGroups))
+
+	// Sync artifact files to destination
+	if len(artifactFileGroups) > 0 {
+		if err := destination.SyncFilesToDestination(ctx, r.fileStore, artifactFileGroups); err != nil {
+			logger.Error(err, "failed to sync files to destination")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+		logger.Info("successfully synced files to destination")
+	} else {
+		logger.Info("no files to sync to destination")
 	}
-	logger.Info("successfully ingested embeddings files to destination")
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
@@ -303,7 +312,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 }
 
 // setupSnowflakeDestination returns a Snowflake internal stage destination for the given CR.
-func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct) (unstructured.Destination, error) {
+func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, dataproductName string) (unstructured.Destination, error) {
 	logger := log.FromContext(ctx)
 	sf, err := snowflake.GetClient()
 	if err != nil {
@@ -311,28 +320,63 @@ func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx contex
 		return nil, err
 	}
 	r.sf = sf
+
 	return &unstructured.SnowflakeInternalStage{
-		Client:   sf,
-		Role:     sf.GetRole(),
-		Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
-		Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
-		Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		Client:          sf,
+		Role:            sf.GetRole(),
+		Stage:           unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
+		Database:        unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
+		Schema:          unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		DataProductName: dataproductName,
 	}, nil
 }
 
 // setupS3Destination returns an S3 destination for the given CR
-func setupS3Destination(unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, dataProductName string) (unstructured.Destination, error) {
+func setupS3Destination(_ context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, dataProductName string) (unstructured.Destination, error) {
 	destCfg := unstructuredDataProductCR.Spec.DestinationConfig.S3DestinationConfig
 	destinationS3Client, err := awsclienthandler.GetDestinationS3Client()
 	if err != nil {
 		return nil, err
 	}
+
 	return &unstructured.S3Destination{
 		S3Client:        destinationS3Client,
 		Bucket:          destCfg.Bucket,
 		Prefix:          destCfg.Prefix,
 		DataProductName: dataProductName,
 	}, nil
+}
+
+func buildDestinationPath(ctx context.Context, unstructuredDataProductCR operatorv1alpha1.UnstructuredDataProduct, filePaths []string) []unstructured.ArtifactFiles {
+	logger := log.FromContext(ctx)
+	var artifactFileGroups []unstructured.ArtifactFiles
+	for _, artifact := range unstructuredDataProductCR.Spec.DestinationConfig.Artifacts {
+		processor := GetProcessorForArtifact(artifact.Name)
+		if processor == nil {
+			logger.Info("unknown artifact name, skipping", "name", artifact.Name)
+			continue
+		}
+
+		suffix := processor.GetFileSuffix()
+
+		var artifactFiles []string
+		for _, filePath := range filePaths {
+			if strings.HasSuffix(filePath, suffix) {
+				artifactFiles = append(artifactFiles, filePath)
+			}
+		}
+
+		if len(artifactFiles) > 0 {
+			artifactFileGroups = append(artifactFileGroups, unstructured.ArtifactFiles{
+				Files:     artifactFiles,
+				Path:      artifact.Path,
+				Processor: processor,
+			})
+			logger.Info("found files for artifact", "artifact", artifact.Name, "path", artifact.Path, "count", len(artifactFiles))
+		}
+	}
+
+	return artifactFileGroups
 }
 
 // SetupWithManager sets up the controller with the Manager.

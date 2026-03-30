@@ -50,6 +50,22 @@ type ChunksGeneratorReconciler struct {
 	fileStore *filestore.FileStore
 }
 
+// ChunksGenerator handles document chunks
+type ChunksGenerator struct{}
+
+func (ChunksGenerator) GetFileSuffix() string {
+	return unstructured.ChunksFileSuffix
+}
+
+func (ChunksGenerator) CompareMetadata(existingData string, newData []byte) bool {
+	var existing, incoming unstructured.ChunksFile
+	return json.Unmarshal([]byte(existingData), &existing) == nil &&
+		json.Unmarshal(newData, &incoming) == nil &&
+		existing.ChunksDocument != nil && incoming.ChunksDocument != nil &&
+		existing.ChunksDocument.Metadata != nil && incoming.ChunksDocument.Metadata != nil &&
+		existing.ChunksDocument.Metadata.Equal(incoming.ChunksDocument.Metadata)
+}
+
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators/finalizers,verbs=update

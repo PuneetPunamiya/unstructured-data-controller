@@ -48,6 +48,22 @@ type VectorEmbeddingsGeneratorReconciler struct {
 	fileStore *filestore.FileStore
 }
 
+// VectorEmbeddings handles vector embeddings
+type VectorEmbeddings struct{}
+
+func (VectorEmbeddings) GetFileSuffix() string {
+	return unstructured.VectorEmbeddingsFileSuffix
+}
+
+func (VectorEmbeddings) CompareMetadata(existingData string, newData []byte) bool {
+	var existing, incoming unstructured.EmbeddingsFile
+	return json.Unmarshal([]byte(existingData), &existing) == nil &&
+		json.Unmarshal(newData, &incoming) == nil &&
+		existing.EmbeddingDocument != nil && incoming.EmbeddingDocument != nil &&
+		existing.EmbeddingDocument.Metadata != nil && incoming.EmbeddingDocument.Metadata != nil &&
+		existing.EmbeddingDocument.Metadata.Equal(incoming.EmbeddingDocument.Metadata)
+}
+
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators/finalizers,verbs=update
