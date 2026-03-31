@@ -238,6 +238,8 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	logger.Info("successfully updated controllerConfig CR status", "status", config.Status)
+
 	return ctrl.Result{}, nil
 }
 
