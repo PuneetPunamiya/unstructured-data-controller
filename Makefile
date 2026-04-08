@@ -141,6 +141,14 @@ test-e2e: setup-test-e2e ## Run the e2e tests. Expected an isolated environment 
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: local-dev-setup
+local-dev-setup: ## Set up local development environment (Kind cluster, namespace, Docling, LocalStack resources)
+	@./scripts/local-dev-setup.sh
+
+.PHONY: local-dev-cleanup
+local-dev-cleanup: ## Clean up local development environment
+	@./scripts/local-dev-cleanup.sh
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
