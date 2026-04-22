@@ -3,13 +3,16 @@ package unstructured
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
@@ -236,26 +239,38 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 		key := d.s3KeyForChunksFile(chunksFilePath)
 		delete(keysInDestination, key)
 
-		// Check if file exists and compare ETag (MD5) to skip unchanged files
+		// Calculate SHA256 of local file
+		hash := sha256.Sum256(data)
+		localSHA256 := base64.StdEncoding.EncodeToString(hash[:])
+
+		// Check if file exists and compare SHA256 from metadata
 		headResp, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{
-			Bucket: aws.String(d.Bucket),
-			Key:    aws.String(key),
+			Bucket:       aws.String(d.Bucket),
+			Key:          aws.String(key),
+			ChecksumMode: types.ChecksumModeEnabled,
 		})
-		if err == nil && headResp.ETag != nil {
-			// S3 ETag is MD5 hash wrapped in quotes for single-part uploads
-			localMD5 := fmt.Sprintf("\"%x\"", md5.Sum(data))
-			if localMD5 == *headResp.ETag {
-				logger.Info("file unchanged, skipping upload",
-					"file", chunksFilePath, "key", key)
-				continue
+
+		var notFoundErr *types.NotFound
+		if err != nil && errors.As(err, &notFoundErr) {
+			if notFoundErr.ErrorCode() != "NotFound" {
+				logger.Info("error while fetching the object",
+					"key", key, "error", err.Error())
+				return err
 			}
 		}
 
-		// File is new or changed, upload it
+		if err == nil && headResp.ChecksumSHA256 != nil && *headResp.ChecksumSHA256 == localSHA256 {
+			logger.Info("file unchanged, skipping upload",
+				"file", chunksFilePath, "key", key)
+			continue
+		}
+
+		// File is new or changed, upload it with SHA256
 		_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket: aws.String(d.Bucket),
-			Key:    aws.String(key),
-			Body:   bytes.NewReader(data),
+			Bucket:            aws.String(d.Bucket),
+			Key:               aws.String(key),
+			Body:              bytes.NewReader(data),
+			ChecksumAlgorithm: types.ChecksumAlgorithmSha256,
 		})
 		if err != nil {
 			logger.Error(err, "failed to upload file to S3", "bucket", d.Bucket, "key", key)
