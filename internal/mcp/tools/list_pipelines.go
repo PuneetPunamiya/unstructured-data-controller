@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
@@ -29,6 +30,35 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
+
+type pipelineFilterCtxKey struct{}
+
+// PipelineFilterMiddleware extracts ?pipelines= from the request URL and injects
+// the comma-separated allow-list into the context for per-connection filtering.
+func PipelineFilterMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if allowedPipelines := r.URL.Query().Get("pipelines"); allowedPipelines != "" {
+			ctx := context.WithValue(r.Context(), pipelineFilterCtxKey{}, allowedPipelines)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isPipelineAllowed returns false when a per-connection pipeline allow-list is active
+// and the given pipeline name is not in it. Returns true when no filter is set.
+func isPipelineAllowed(ctx context.Context, pipelineName string) bool {
+	allowedPipelines, hasFilter := ctx.Value(pipelineFilterCtxKey{}).(string)
+	if !hasFilter {
+		return true
+	}
+	for _, allowedPipeline := range strings.Split(allowedPipelines, ",") {
+		if strings.TrimSpace(allowedPipeline) == pipelineName {
+			return true
+		}
+	}
+	return false
+}
 
 // RegisterListPipelines registers the list_unstructured_data_pipelines_for_user MCP tool
 func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
@@ -106,6 +136,18 @@ If the pipeline has a "guidance" field, follow those instructions when working w
 				accessible = append(accessible, p)
 			}
 		}
+
+		// per-connection allow-list from ?pipelines= query param
+		filtered := accessible[:0]
+		for _, p := range accessible {
+			if isPipelineAllowed(ctx, p.Name) {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) != len(accessible) {
+			log.Info("applied per-client query param filter", "accessible_after_filter", len(filtered))
+		}
+		accessible = filtered
 
 		if len(accessible) == 0 {
 			if len(pipelines) == 0 {
