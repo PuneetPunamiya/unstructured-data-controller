@@ -218,7 +218,7 @@ type UnstructuredDataPipelineSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Description string `json:"description"`
-	// Guidance is instructions for the AI agent on how to use this pipeline's data.
+	// Guidance exposed via the MCP server to share details about how to best use this Unstructured Data Pipeline.
 	// +optional
 	Guidance string `json:"guidance,omitempty"`
 	// +optional

@@ -54,8 +54,8 @@ spec:
                 minLength: 1
                 type: string
               guidance:
-                description: Guidance is instructions for the AI agent on how to use
-                  this pipeline's data.
+                description: Guidance exposed via the MCP server to share details
+                  about how to best use this Unstructured Data Pipeline.
                 type: string
               secretRef:
                 type: string
