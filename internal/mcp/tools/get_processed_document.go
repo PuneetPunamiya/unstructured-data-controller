@@ -62,6 +62,14 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
+		if !isPipelineAllowed(ctx, args.PipelineName) {
+			log.Error("pipeline not in per-client allow-list", "pipeline_name", args.PipelineName)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: pipeline %q is not accessible in this session.", args.PipelineName)}},
+				IsError: true,
+			}, nil, nil
+		}
+
 		oauthToken, ok := auth.AccessTokenFromContext(ctx)
 		if !ok {
 			log.Error("oauth token not found in context")
