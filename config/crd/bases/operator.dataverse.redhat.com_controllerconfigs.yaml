@@ -50,6 +50,8 @@ spec:
                 type: string
               dataStorageBucket:
                 type: string
+              doclingHTTPTimeout:
+                type: integer
               doclingServeURL:
                 type: string
               googleDriveConfig:

@@ -86,6 +86,20 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	documentProcessorCR = documentProcessorCR.DeepCopy()
 	documentProcessorCR.Spec.DocumentProcessorConfig.SetDefaults()
 
+	// Inject VLM URL from secret into the CRD config so it propagates to stored metadata and wire config.
+	if vlmAPIURL != "" && documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.PictureDescriptionAPI != nil &&
+		documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.PictureDescriptionAPI.URL == "" {
+		documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.PictureDescriptionAPI.URL = strings.TrimSpace(vlmAPIURL)
+	}
+
+	if documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.DoPictureDescription != nil &&
+		*documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.DoPictureDescription &&
+		(documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.PictureDescriptionAPI == nil ||
+			documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.PictureDescriptionAPI.URL == "") {
+		return r.handleError(ctx, documentProcessorCR,
+			errors.New("VLM API URL is required for picture description but is not set in the DocumentProcessor CR or the VLM API URL secret"))
+	}
+
 	// set status to waiting
 	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 		documentProcessorCR.SetWaiting()
@@ -113,13 +127,22 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		ImagesScale:                     parseFloat64Ptr(cfg.ImagesScale),
 		DoCodeEnrichment:                cfg.DoCodeEnrichment,
 		DoFormulaEnrichment:             cfg.DoFormulaEnrichment,
-		DoPictureClassification:         cfg.DoPictureClassification,
-		DoPictureDescription:            cfg.DoPictureDescription,
+		DoPictureClassification:         *cfg.DoPictureClassification,
+		DoPictureDescription:            *cfg.DoPictureDescription,
 		DoChartExtraction:               cfg.DoChartExtraction,
+		PictureDescriptionAPI:           convertPictureDescriptionAPI(cfg.PictureDescriptionAPI),
 		PictureDescriptionAreaThreshold: parseFloat64Ptr(cfg.PictureDescriptionAreaThreshold),
 		DocumentTimeout:                 parseFloat64Ptr(cfg.DocumentTimeout),
 		PageRange:                       cfg.PageRange,
 		MdPageBreakPlaceholder:          cfg.MdPageBreakPlaceholder,
+	}
+
+	// Inject auth header into wire config only (secret, not stored in metadata).
+	if doclingCfg.PictureDescriptionAPI != nil && vlmAPIKey != "" {
+		if doclingCfg.PictureDescriptionAPI.Headers == nil {
+			doclingCfg.PictureDescriptionAPI.Headers = map[string]string{}
+		}
+		doclingCfg.PictureDescriptionAPI.Headers["Authorization"] = "Bearer " + strings.TrimSpace(vlmAPIKey)
 	}
 
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
@@ -542,6 +565,40 @@ func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentP
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, reconcileErr
+}
+
+func copyHeaders(h map[string]string) map[string]string {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		out[k] = v
+	}
+	return out
+}
+
+func convertPictureDescriptionAPI(api *operatorv1alpha1.PictureDescriptionAPI) *docling.PictureDescriptionAPI {
+	if api == nil {
+		return nil
+	}
+	var timeout float64
+	if api.Timeout != "" {
+		if v, err := strconv.ParseFloat(api.Timeout, 64); err == nil {
+			timeout = v
+		}
+	}
+	return &docling.PictureDescriptionAPI{
+		URL: api.URL,
+		Params: docling.PictureDescriptionAPIParams{
+			Model:     api.Params.Model,
+			MaxTokens: api.Params.MaxTokens,
+		},
+		Prompt:      api.Prompt,
+		Timeout:     timeout,
+		Concurrency: api.Concurrency,
+		Headers:     copyHeaders(api.Headers),
+	}
 }
 
 func parseFloat64Ptr(s string) *float64 {

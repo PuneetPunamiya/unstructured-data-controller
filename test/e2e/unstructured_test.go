@@ -45,6 +45,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestUnstructuredDataLoad(t *testing.T) {
 	feature := features.New("Unstructured Data Load")
 
@@ -349,13 +351,15 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 	feature.Assess("Will change docling config and verify re-processing", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 		doclingConfig := &v1alpha1.DoclingConfig{
-			FromFormats:     []string{"pdf", "docx", "pptx", "xlsx"},
-			ImageExportMode: "embedded",
-			OCRPreset:       "auto",
-			OCRLang:         []string{"en"},
-			PDFBackend:      "docling_parse",
-			Pipeline:        "standard",
-			TableMode:       "fast",
+			FromFormats:             []string{"pdf", "docx", "pptx", "xlsx"},
+			ImageExportMode:         "embedded",
+			OCRPreset:               "auto",
+			OCRLang:                 []string{"en"},
+			PDFBackend:              "docling_parse",
+			Pipeline:                "standard",
+			TableMode:               "fast",
+			DoPictureDescription:    boolPtr(false),
+			DoPictureClassification: boolPtr(false),
 		}
 
 		// fetch the latest version of the pipeline CR

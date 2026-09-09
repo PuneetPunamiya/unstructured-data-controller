@@ -41,6 +41,16 @@ import (
 //	      do_table_structure: true
 //	      include_images: true
 //	      images_scale: "2.0"
+//	      do_picture_description: true
+//	      do_picture_classification: true
+//	      picture_description_api:
+//	        url: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+//	        params:
+//	          model: gemini-3.5-flash
+//	          max_tokens: 8192
+//	        prompt: "Treat this image as a document page. Extract every piece of information visible."
+//	        timeout: "60"
+//	        concurrency: 5
 //	status:
 //	  conditions:
 //	    - type: DocumentProcessorReady
@@ -49,14 +59,34 @@ import (
 //	  jobs: []                               # tracks in-flight docling conversion jobs
 
 const (
-	DocumentProcessorCondition   = "DocumentProcessorReady"
-	DefaultDocumentProcessorType = "docling"
-	DefaultOCRPreset             = "auto"
-	DefaultPDFBackend            = "docling_parse"
-	DefaultPipeline              = "standard"
-	DefaultTableMode             = "accurate"
-	DefaultImageExportMode       = "embedded"
-	DefaultImagesScale           = "2.0"
+	DocumentProcessorCondition    = "DocumentProcessorReady"
+	DefaultDocumentProcessorType  = "docling"
+	DefaultOCRPreset              = "auto"
+	DefaultPDFBackend             = "docling_parse"
+	DefaultPipeline               = "standard"
+	DefaultTableMode              = "accurate"
+	DefaultImageExportMode        = "embedded"
+	DefaultImagesScale            = "2.0"
+	DefaultPictureDescModel       = "gemini-3.5-flash"
+	DefaultPictureDescMaxTokens   = 4096
+	DefaultPictureDescTimeout     = "60"
+	DefaultPictureDescConcurrency = 5
+	DefaultPictureDescPrompt      = "Treat this image as a document page. Extract every piece of " +
+		"information visible — leave nothing out. For text: reproduce exact wording, spelling, " +
+		"capitalization, numbers, dates, currencies, percentages, units, abbreviations, URLs, " +
+		"emails, phone numbers, and special characters. Preserve paragraph structure and " +
+		"bullet/numbered list ordering. For tables: reproduce every row, column, header, and " +
+		"cell value exactly. Preserve merged cells, empty cells, and alignment. Use markdown " +
+		"table format. For charts/graphs: extract the chart type, title, axis labels with units, " +
+		"every data point or bar value, legend entries, trend lines, and annotations. If exact " +
+		"values are readable, state them; if approximate, say so. For diagrams/flowcharts: " +
+		"capture every label, node, connector, arrow direction, decision branch, and annotation. " +
+		"Describe the flow sequence. For forms: extract every field label and its filled-in value, " +
+		"checkboxes (checked/unchecked), radio buttons, signatures, stamps, and dates. For " +
+		"logos/watermarks/headers/footers: describe position, text, and any visible branding. " +
+		"Do not summarize, paraphrase, or omit anything. Do not add information not visible in " +
+		"the image. If text is partially obscured or illegible, note it as [illegible] or " +
+		"[partially visible: best guess]."
 )
 
 var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
@@ -209,6 +239,21 @@ type DocumentProcessorConfig struct {
 	DoclingConfig DoclingConfig `json:"doclingConfig,omitempty"`
 }
 
+type PictureDescriptionAPIParams struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
+type PictureDescriptionAPI struct {
+	URL         string                      `json:"url"`
+	Params      PictureDescriptionAPIParams `json:"params"`
+	Prompt      string                      `json:"prompt,omitempty"`
+	Timeout     string                      `json:"timeout,omitempty"`
+	Concurrency int                         `json:"concurrency,omitempty"`
+	// Additional HTTP headers for the VLM API request.
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
 type DoclingConfig struct {
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
@@ -238,11 +283,13 @@ type DoclingConfig struct {
 	// +optional
 	DoFormulaEnrichment bool `json:"do_formula_enrichment,omitempty"`
 	// +optional
-	DoPictureClassification bool `json:"do_picture_classification,omitempty"`
+	DoPictureClassification *bool `json:"do_picture_classification,omitempty"`
 	// +optional
-	DoPictureDescription bool `json:"do_picture_description,omitempty"`
+	DoPictureDescription *bool `json:"do_picture_description,omitempty"`
 	// +optional
 	DoChartExtraction bool `json:"do_chart_extraction,omitempty"`
+	// +optional
+	PictureDescriptionAPI *PictureDescriptionAPI `json:"picture_description_api,omitempty"`
 	// +optional
 	PictureDescriptionAreaThreshold string `json:"picture_description_area_threshold,omitempty"`
 	// +optional
@@ -298,6 +345,32 @@ func (c *DoclingConfig) SetDefaults() {
 	}
 	if c.ImagesScale == "" {
 		c.ImagesScale = DefaultImagesScale
+	}
+	if c.DoPictureDescription == nil {
+		c.DoPictureDescription = boolPtr(true)
+	}
+	if c.DoPictureClassification == nil {
+		c.DoPictureClassification = boolPtr(true)
+	}
+	if *c.DoPictureDescription {
+		if c.PictureDescriptionAPI == nil {
+			c.PictureDescriptionAPI = &PictureDescriptionAPI{}
+		}
+		if c.PictureDescriptionAPI.Params.Model == "" {
+			c.PictureDescriptionAPI.Params.Model = DefaultPictureDescModel
+		}
+		if c.PictureDescriptionAPI.Params.MaxTokens == 0 {
+			c.PictureDescriptionAPI.Params.MaxTokens = DefaultPictureDescMaxTokens
+		}
+		if c.PictureDescriptionAPI.Prompt == "" {
+			c.PictureDescriptionAPI.Prompt = DefaultPictureDescPrompt
+		}
+		if c.PictureDescriptionAPI.Timeout == "" {
+			c.PictureDescriptionAPI.Timeout = DefaultPictureDescTimeout
+		}
+		if c.PictureDescriptionAPI.Concurrency == 0 {
+			c.PictureDescriptionAPI.Concurrency = DefaultPictureDescConcurrency
+		}
 	}
 }
 

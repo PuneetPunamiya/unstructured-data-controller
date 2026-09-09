@@ -57,8 +57,10 @@ type ControllerConfigSpec struct {
 	MaxConcurrentDoclingTasks   int    `json:"maxConcurrentDoclingTasks,omitempty"`
 	MaxConcurrentLangchainTasks int    `json:"maxConcurrentLangchainTasks,omitempty"`
 	DoclingServeURL             string `json:"doclingServeURL,omitempty"`
-	CacheDirectory              string `json:"cacheDirectory,omitempty"`
-	DataStorageBucket           string `json:"dataStorageBucket,omitempty"`
+	// +optional
+	DoclingHTTPTimeout *int   `json:"doclingHTTPTimeout,omitempty"`
+	CacheDirectory     string `json:"cacheDirectory,omitempty"`
+	DataStorageBucket  string `json:"dataStorageBucket,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	UnstructuredDataPipelineResyncInterval *int `json:"unstructuredDataPipelineResyncInterval,omitempty"`
 	// GDriveConfig holds operator-level Google Drive crawling settings.

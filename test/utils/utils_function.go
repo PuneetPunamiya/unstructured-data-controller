@@ -13,6 +13,8 @@ import (
 // DefaultE2ENamespace is the namespace used by e2e tests (must match test/e2e/main_test.go testNamespace).
 const DefaultE2ENamespace = "unstructured-controller-namespace"
 
+func boolPtr(b bool) *bool { return &b }
+
 func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 	return &v1alpha1.ControllerConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -68,14 +70,16 @@ func GetUnstructuredDataPipelineResourceWithStage(name, namespace string) v1alph
 					DocumentProcessorConfig: &v1alpha1.DocumentProcessorConfig{
 						Type: "docling",
 						DoclingConfig: v1alpha1.DoclingConfig{
-							FromFormats:     []string{"pdf", "docx", "html", "md", "csv", "xlsx"},
-							ToFormats:       []string{"md"},
-							ImageExportMode: "embedded",
-							OCRPreset:       "auto",
-							OCRLang:         []string{"en"},
-							PDFBackend:      "docling_parse",
-							Pipeline:        "standard",
-							TableMode:       "fast",
+							FromFormats:             []string{"pdf", "docx", "html", "md", "csv", "xlsx"},
+							ToFormats:               []string{"md"},
+							ImageExportMode:         "embedded",
+							OCRPreset:               "auto",
+							OCRLang:                 []string{"en"},
+							PDFBackend:              "docling_parse",
+							Pipeline:                "standard",
+							TableMode:               "fast",
+							DoPictureDescription:    boolPtr(false),
+							DoPictureClassification: boolPtr(false),
 						},
 					},
 				},

@@ -102,6 +102,34 @@ spec:
                         type: array
                       pdf_backend:
                         type: string
+                      picture_description_api:
+                        properties:
+                          concurrency:
+                            type: integer
+                          headers:
+                            additionalProperties:
+                              type: string
+                            description: Additional HTTP headers for the VLM API request.
+                            type: object
+                          params:
+                            properties:
+                              max_tokens:
+                                type: integer
+                              model:
+                                type: string
+                            required:
+                            - model
+                            type: object
+                          prompt:
+                            type: string
+                          timeout:
+                            type: string
+                          url:
+                            type: string
+                        required:
+                        - params
+                        - url
+                        type: object
                       picture_description_area_threshold:
                         type: string
                       pipeline:
@@ -254,6 +282,35 @@ spec:
                           type: array
                         pdf_backend:
                           type: string
+                        picture_description_api:
+                          properties:
+                            concurrency:
+                              type: integer
+                            headers:
+                              additionalProperties:
+                                type: string
+                              description: Additional HTTP headers for the VLM API
+                                request.
+                              type: object
+                            params:
+                              properties:
+                                max_tokens:
+                                  type: integer
+                                model:
+                                  type: string
+                              required:
+                              - model
+                              type: object
+                            prompt:
+                              type: string
+                            timeout:
+                              type: string
+                            url:
+                              type: string
+                          required:
+                          - params
+                          - url
+                          type: object
                         picture_description_area_threshold:
                           type: string
                         pipeline:

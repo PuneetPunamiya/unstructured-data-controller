@@ -62,6 +62,8 @@ var (
 	doclingClient                          *docling.Client
 	langchainClient                        *langchain.Client
 	embeddingModelCredentials              = map[Model]ModelCredentials{}
+	vlmAPIKey                              string
+	vlmAPIURL                              string
 	UnstructuredDataPipelineResyncInterval *int
 	LDAPClient                             ldap.Client
 	CacheClient                            pkgcache.Cache
@@ -102,9 +104,14 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// initialize docling client
+	httpTimeout := 60 * time.Second
+	if config.Spec.DoclingHTTPTimeout != nil {
+		httpTimeout = time.Duration(*config.Spec.DoclingHTTPTimeout) * time.Second
+	}
 	doclingConfig := &docling.ClientConfig{
 		URL:                   config.Spec.DoclingServeURL,
 		MaxConcurrentRequests: int64(config.Spec.MaxConcurrentDoclingTasks),
+		HTTPTimeout:           httpTimeout,
 	}
 	if doclingKey := string(secret.Data["DOCLING_USER_KEY"]); doclingKey != "" {
 		doclingConfig.Key = doclingKey
@@ -138,6 +145,10 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			APIKey:   string(secret.Data[secretKeys.APIKey]),
 		}
 	}
+
+	// VLM credentials for picture description
+	vlmAPIKey = string(secret.Data["VLM_API_KEY"])
+	vlmAPIURL = string(secret.Data["VLM_API_URL"])
 
 	// initialize LDAP client and cache if configured
 	if config.Spec.LDAPConfig != nil && config.Spec.LDAPConfig.Server != "" {
