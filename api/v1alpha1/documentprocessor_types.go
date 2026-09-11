@@ -67,7 +67,7 @@ const (
 	DefaultTableMode              = "accurate"
 	DefaultImageExportMode        = "embedded"
 	DefaultImagesScale            = "2.0"
-	DefaultPictureDescModel       = "gemini-3.5-flash"
+	DefaultPictureDescModel       = "qwen3-8-27b-fp8"
 	DefaultPictureDescMaxTokens   = 4096
 	DefaultPictureDescTimeout     = "60"
 	DefaultPictureDescConcurrency = 5
