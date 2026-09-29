@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 )
 
@@ -57,6 +58,40 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 		SessionToken:    string(secret.Data[prefix+"SESSION_TOKEN"]),
 		Endpoint:        string(secret.Data[prefix+"ENDPOINT"]),
 	}, nil
+}
+
+const (
+	sourceCrawlerGitLabTokenKey = "SOURCE_CRAWLER_GITLAB_TOKEN"
+)
+
+// GitTokenFromSecret reads the git access token from a K8s Secret.
+// The provider determines which key to read (e.g. SOURCE_CRAWLER_GITLAB_TOKEN).
+func GitTokenFromSecret(ctx context.Context, c client.Client, secretName, namespace string, provider operatorv1alpha1.GitProvider) (string, error) {
+	if secretName == "" {
+		return "", nil
+	}
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return "", fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
+	}
+	tokenKey := providerTokenKey(provider)
+	if tokenKey == "" {
+		return "", nil
+	}
+	token, ok := secret.Data[tokenKey]
+	if !ok || len(token) == 0 {
+		return "", fmt.Errorf("token key %s not found or empty in secret %s", tokenKey, secretName)
+	}
+	return string(token), nil
+}
+
+func providerTokenKey(provider operatorv1alpha1.GitProvider) string {
+	switch provider {
+	case operatorv1alpha1.GitProviderGitLab:
+		return sourceCrawlerGitLabTokenKey
+	default:
+		return ""
+	}
 }
 
 // GDriveCredentialsFromSecret reads the Google service account JSON

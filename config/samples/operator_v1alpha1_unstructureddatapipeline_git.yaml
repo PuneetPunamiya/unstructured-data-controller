@@ -1,0 +1,59 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: UnstructuredDataPipeline
+metadata:
+  name: gitlab-test-final
+spec:
+  description: "Pipeline for crawling markdown files from a Git repository"
+  secretRef: pipeline-secret
+  stages:
+    - name: crawl
+      type: SourceCrawler
+      sourceCrawlerConfig:
+        type: git
+        gitConfig:
+          provider: gitlab
+          repos:
+            - repo: https://gitlab.com/
+              name: test-operator-final
+              description: "Unstructured data controller documentation"
+              revision: main
+              fileFormats: ["md"]
+              paths:
+                - README.md
+                - "! commnet"
+                # - "!vendor/**"
+                # - "!node_modules/**"
+    - name: convert
+      type: DocumentProcessor
+      dependsOn:
+        - name: crawl
+      documentProcessorConfig:
+        type: docling
+        doclingConfig:
+          from_formats: [md]
+          pipeline: standard
+          do_picture_description: false
+    - name: chunk
+      type: ChunksGenerator
+      dependsOn:
+        - name: convert
+      chunksGeneratorConfig:
+        strategy: markdownTextSplitter
+    - name: embed
+      type: VectorEmbeddingsGenerator
+      dependsOn:
+        - name: chunk
+      vectorEmbeddingsGeneratorConfig:
+        modelName: nomic-ai/nomic-embed-text-v1.5
+    - name: sync
+      type: DestinationSyncer
+      dependsOn:
+        - name: crawl
+        - name: convert
+        - name: chunk
+        - name: embed
+      destinationSyncerConfig:
+        type: s3
+        s3DestinationConfig:
+          bucket: dataverse-internal-unstructured
+          prefix: gitlab-test/destination/
