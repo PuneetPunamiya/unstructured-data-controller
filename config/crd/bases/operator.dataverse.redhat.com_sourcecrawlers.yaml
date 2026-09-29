@@ -65,6 +65,73 @@ spec:
                 description: SourceCrawlerConfig configures where to read unstructured
                   data from.
                 properties:
+                  gitConfig:
+                    description: GitConfig configures git repositories as a data source.
+                    properties:
+                      pollInterval:
+                        description: |-
+                          PollInterval configures how often to check for new commits via ls-remote.
+                          Defaults to "5m". Minimum enforced is "5m". Examples: "5m", "1h", "24h".
+                        type: string
+                      provider:
+                        description: |-
+                          Provider identifies the git hosting platform (e.g. "gitlab").
+                          Determines which token key to read from the secret. If empty, no authentication is used (public repos).
+                        enum:
+                        - gitlab
+                        - ""
+                        type: string
+                      repos:
+                        description: Repos is the list of git repositories to crawl.
+                        items:
+                          description: GitRepo configures a single git repository
+                            to crawl.
+                          properties:
+                            description:
+                              description: Description is a human-readable summary
+                                of what is crawled from this repository.
+                              type: string
+                            fileFormats:
+                              description: |-
+                                FileFormats restricts which file types to crawl by extension (e.g. ["md", "pdf"]).
+                                Bare extensions without dots or globs. If empty, all files are crawled.
+                              items:
+                                type: string
+                              type: array
+                            name:
+                              description: |-
+                                Name is a short identifier for this repository, used as the storage path slug and in status/logging.
+                                Must be a safe path segment: alphanumeric, hyphens, underscores, and dots (not leading).
+                              pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
+                              type: string
+                            paths:
+                              description: |-
+                                Paths is a list of include and exclude rules for crawling, following gitignore syntax
+                                (https://git-scm.com/docs/gitignore#_pattern_format).
+                                Entries without "!" prefix are includes (e.g. "docs/", "README.md").
+                                Entries with "!" prefix are excludes (e.g. "!vendor/**", "!**/test/**").
+                                If no includes are specified, the entire repo is crawled (excludes still apply).
+                                Excludes always take precedence over includes.
+                              items:
+                                type: string
+                              type: array
+                            repo:
+                              description: Repo is the git repository URL (HTTPS).
+                              type: string
+                            revision:
+                              description: |-
+                                Revision to track: a branch name, tag name, or full commit SHA.
+                                Defaults to "main".
+                              type: string
+                          required:
+                          - name
+                          - repo
+                          type: object
+                        minItems: 1
+                        type: array
+                    required:
+                    - repos
+                    type: object
                   googleDriveConfig:
                     description: |-
                       GDriveConfig configures Google Drive folder crawling at the pipeline level.
@@ -185,6 +252,23 @@ spec:
                       type: string
                   required:
                   - url
+                  type: object
+                type: array
+              gitRepoStatus:
+                items:
+                  description: GitRepoStatus tracks the observed state of a single
+                    git repository.
+                  properties:
+                    commitSHA:
+                      type: string
+                    configHash:
+                      type: string
+                    error:
+                      type: string
+                    repo:
+                      type: string
+                  required:
+                  - repo
                   type: object
                 type: array
               lastAppliedGeneration:

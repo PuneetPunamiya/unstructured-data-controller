@@ -71,6 +71,8 @@ var (
 	CacheClient                            pkgcache.Cache
 	GoogleDriveControllerCfg               *operatorv1alpha1.GoogleDriveControllerConfig
 	GlobalGoogleClient                     google.GoogleClient
+	controllerConfigSecretRef              string
+	controllerConfigNamespace              string
 )
 
 // ControllerConfigReconciler reconciles a ControllerConfig object
@@ -94,6 +96,8 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	dataStorageBucket = config.Spec.DataStorageBucket
 	dataStorageDirectory = config.Spec.DataStorageDirectory
+	controllerConfigSecretRef = config.Spec.SecretRef
+	controllerConfigNamespace = req.Namespace
 
 	// fetch operator-level secret for filestore + docling credentials
 	secret := &corev1.Secret{}

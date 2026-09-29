@@ -83,6 +83,7 @@ type (
 const (
 	TypeS3                             UnstructuredDataType = "s3"
 	TypeGoogleDrive                    UnstructuredDataType = "googleDrive"
+	TypeGit                            UnstructuredDataType = "git"
 	ChunkingStrategyRecursiveCharacter ChunkingStrategy     = "recursiveCharacterTextSplitter"
 	ChunkingStrategyMarkdown           ChunkingStrategy     = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy     = "tokenTextSplitter"
@@ -153,6 +154,62 @@ type SourceCrawlerConfig struct {
 	Type              UnstructuredDataType `json:"type,omitempty"`
 	S3Config          S3Config             `json:"s3Config,omitempty"`
 	GoogleDriveConfig *GoogleDriveConfig   `json:"googleDriveConfig,omitempty"`
+	// +optional
+	GitConfig *GitConfig `json:"gitConfig,omitempty"`
+}
+
+// GitProvider identifies the git hosting platform.
+type GitProvider string
+
+const (
+	GitProviderGitLab GitProvider = "gitlab"
+)
+
+// GitConfig configures git repositories as a data source.
+type GitConfig struct {
+	// Provider identifies the git hosting platform (e.g. "gitlab").
+	// Determines which token key to read from the secret. If empty, no authentication is used (public repos).
+	// +optional
+	// +kubebuilder:validation:Enum=gitlab;""
+	Provider GitProvider `json:"provider,omitempty"`
+	// Repos is the list of git repositories to crawl.
+	// +kubebuilder:validation:MinItems=1
+	Repos []GitRepo `json:"repos"`
+	// PollInterval configures how often to check for new commits via ls-remote.
+	// Defaults to "5m". Minimum enforced is "5m". Examples: "5m", "1h", "24h".
+	// +optional
+	PollInterval *metav1.Duration `json:"pollInterval,omitempty"`
+}
+
+// GitRepo configures a single git repository to crawl.
+type GitRepo struct {
+	// Repo is the git repository URL (HTTPS).
+	// +kubebuilder:validation:Required
+	Repo string `json:"repo"`
+	// Name is a short identifier for this repository, used as the storage path slug and in status/logging.
+	// Must be a safe path segment: alphanumeric, hyphens, underscores, and dots (not leading).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`
+	Name string `json:"name"`
+	// Description is a human-readable summary of what is crawled from this repository.
+	// +optional
+	Description string `json:"description,omitempty"`
+	// Revision to track: a branch name, tag name, or full commit SHA.
+	// Defaults to "main".
+	// +optional
+	Revision string `json:"revision,omitempty"`
+	// FileFormats restricts which file types to crawl by extension (e.g. ["md", "pdf"]).
+	// Bare extensions without dots or globs. If empty, all files are crawled.
+	// +optional
+	FileFormats []string `json:"fileFormats,omitempty"`
+	// Paths is a list of include and exclude rules for crawling, following gitignore syntax
+	// (https://git-scm.com/docs/gitignore#_pattern_format).
+	// Entries without "!" prefix are includes (e.g. "docs/", "README.md").
+	// Entries with "!" prefix are excludes (e.g. "!vendor/**", "!**/test/**").
+	// If no includes are specified, the entire repo is crawled (excludes still apply).
+	// Excludes always take precedence over includes.
+	// +optional
+	Paths []string `json:"paths,omitempty"`
 }
 
 // GDriveConfig configures Google Drive folder crawling at the pipeline level.

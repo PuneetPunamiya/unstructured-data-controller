@@ -18,9 +18,11 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -41,12 +43,15 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gitclient"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/pathfilter"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
 const (
 	SourceCrawlerControllerName  = "SourceCrawler"
 	defaultCrawlerResyncInterval = 2 * time.Minute
+	defaultGitPollInterval       = 5 * time.Minute
 )
 
 // SourceCrawlerReconciler reconciles a SourceCrawler object
@@ -133,6 +138,36 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// the Google client per pipeline (keyed by secret resourceVersion).
 		defer gdriveSource.Close()
 		source = gdriveSource
+
+	case operatorv1alpha1.TypeGit:
+		storedFiles, repoStatus, err := r.buildAndSyncGitRepos(ctx, sourceCrawlerCR, sourceCrawlerConfig.GitConfig, outputDir)
+		if err != nil {
+			if patchErr := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
+				sourceCrawlerCR.Status.GitRepoStatus = repoStatus
+			}); patchErr != nil {
+				logger.Error(patchErr, "failed to update SourceCrawler CR status with git repo status")
+			}
+			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
+		}
+
+		successMessage := fmt.Sprintf("successfully reconciled source crawler: %s", sourceCrawlerCR.Name)
+		if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
+			sourceCrawlerCR.Status.FilesProcessed += int64(len(storedFiles))
+			sourceCrawlerCR.Status.GitRepoStatus = repoStatus
+			sourceCrawlerCR.UpdateStatus(successMessage, nil)
+		}); err != nil {
+			logger.Error(err, "failed to update SourceCrawler CR status")
+			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
+		}
+
+		interval := defaultGitPollInterval
+		if sourceCrawlerConfig.GitConfig.PollInterval != nil && sourceCrawlerConfig.GitConfig.PollInterval.Duration > 0 {
+			interval = sourceCrawlerConfig.GitConfig.PollInterval.Duration
+		}
+		if interval < defaultGitPollInterval {
+			interval = defaultGitPollInterval
+		}
+		return ctrl.Result{RequeueAfter: interval}, nil
 
 	default:
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("unsupported source type: %s", sourceCrawlerConfig.Type))
@@ -326,6 +361,148 @@ func buildGDriveStatus(gds *unstructured.GDriveSource, gdriveConfig *operatorv1a
 	return result
 }
 
+func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
+	ctx context.Context,
+	sourceCrawlerCR *operatorv1alpha1.SourceCrawler,
+	gitConfig *operatorv1alpha1.GitConfig,
+	outputDir string,
+) ([]unstructured.RawFileMetadata, []operatorv1alpha1.GitRepoStatus, error) {
+	logger := log.FromContext(ctx)
+
+	if gitConfig == nil {
+		return nil, nil, errors.New("gitConfig is required when source type is git")
+	}
+
+	var token string
+	if gitConfig.Provider != "" {
+		var err error
+		token, err = controllerutils.GitTokenFromSecret(
+			ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace, gitConfig.Provider)
+		if err != nil || token == "" {
+			logger.Info("pipeline secret does not contain git token, trying controller config secret")
+			token, err = controllerutils.GitTokenFromSecret(
+				ctx, r.Client, controllerConfigSecretRef, controllerConfigNamespace, gitConfig.Provider)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to get git credentials from both pipeline and controller config secrets: %w", err)
+			}
+		}
+	}
+
+	prevStatusMap := make(map[string]operatorv1alpha1.GitRepoStatus)
+	for _, rs := range sourceCrawlerCR.Status.GitRepoStatus {
+		prevStatusMap[rs.Repo] = rs
+	}
+
+	var allStoredFiles []unstructured.RawFileMetadata
+	repoStatus := make([]operatorv1alpha1.GitRepoStatus, 0, len(gitConfig.Repos))
+	var repoErrors []string
+
+	for _, repo := range gitConfig.Repos {
+		revision := repo.Revision
+		if revision == "" {
+			revision = "main"
+		}
+
+		gitClient := gitclient.NewClient(repo.Repo, revision, token, gitConfig.Provider)
+
+		currentHash, err := gitClient.CommitSHA(ctx)
+		if err != nil {
+			logger.Error(err, "failed to check git HEAD", "repo", repo.Repo)
+			repoStatus = append(repoStatus, operatorv1alpha1.GitRepoStatus{
+				Repo:      repo.Repo,
+				CommitSHA: prevStatusMap[repo.Repo].CommitSHA,
+				Error:     err.Error(),
+			})
+			repoErrors = append(repoErrors, fmt.Sprintf("%s: %v", repo.Repo, err))
+			continue
+		}
+
+		slug := repo.Name
+		repoOutputDir := path.Join(outputDir, slug)
+
+		configHash := gitRepoConfigHash(repo)
+		prevRepo := prevStatusMap[repo.Repo]
+		if currentHash == prevRepo.CommitSHA && configHash == prevRepo.ConfigHash {
+			files, listErr := r.fileStore.ListFilesInPath(ctx, repoOutputDir)
+			if listErr == nil && len(files) > 0 {
+				logger.Info("git HEAD and config unchanged, skipping clone", "repo", repo.Repo, "revision", revision, "hash", currentHash)
+				repoStatus = append(repoStatus, operatorv1alpha1.GitRepoStatus{
+					Repo:       repo.Repo,
+					CommitSHA:  currentHash,
+					ConfigHash: configHash,
+				})
+				continue
+			}
+			logger.Info("git HEAD unchanged but filestore empty, will re-sync", "repo", repo.Repo, "revision", revision)
+		}
+
+		logger.Info("git HEAD changed, cloning", "repo", repo.Repo,
+			"revision", revision, "previousHash", prevRepo.CommitSHA, "currentHash", currentHash)
+
+		filter, err := pathfilter.New(repo.Paths)
+		if err != nil {
+			logger.Error(err, "invalid path rules", "repo", repo.Repo)
+			repoStatus = append(repoStatus, operatorv1alpha1.GitRepoStatus{
+				Repo:       repo.Repo,
+				ConfigHash: configHash,
+				Error:      fmt.Sprintf("invalid path rules: %v", err),
+			})
+			repoErrors = append(repoErrors, fmt.Sprintf("%s: %v", repo.Repo, err))
+			continue
+		}
+
+		gitSource := &unstructured.GitSource{
+			GitClient:   gitClient,
+			Filter:      filter,
+			FileFormats: repo.FileFormats,
+			OutputDir:   repoOutputDir,
+			CommitSHA:   currentHash,
+		}
+
+		storedFiles, syncErr := gitSource.SyncFilesToFilestore(ctx, r.fileStore)
+		allStoredFiles = append(allStoredFiles, storedFiles...)
+		if syncErr != nil {
+			logger.Error(syncErr, "partial sync failure for git repo", "repo", repo.Repo, "filesStored", len(storedFiles))
+			repoStatus = append(repoStatus, operatorv1alpha1.GitRepoStatus{
+				Repo:       repo.Repo,
+				CommitSHA:  currentHash,
+				ConfigHash: configHash,
+				Error:      fmt.Sprintf("sync partially failed: %v", syncErr),
+			})
+			repoErrors = append(repoErrors, fmt.Sprintf("%s: %v", repo.Repo, syncErr))
+			continue
+		}
+
+		logger.Info("successfully synced git repo", "repo", repo.Repo, "files", len(storedFiles))
+		repoStatus = append(repoStatus, operatorv1alpha1.GitRepoStatus{
+			Repo:       repo.Repo,
+			CommitSHA:  currentHash,
+			ConfigHash: configHash,
+		})
+	}
+
+	if len(repoErrors) == len(gitConfig.Repos) {
+		return allStoredFiles, repoStatus, fmt.Errorf("all git repos failed: %s", strings.Join(repoErrors, "; "))
+	}
+
+	return allStoredFiles, repoStatus, nil
+}
+
+func gitRepoConfigHash(repo operatorv1alpha1.GitRepo) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(repo.Revision))
+	_, _ = h.Write([]byte{0})
+	for _, p := range repo.Paths {
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write([]byte{0})
+	}
+	for _, f := range repo.FileFormats {
+		_, _ = h.Write([]byte(f))
+		_, _ = h.Write([]byte{0})
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
 func (r *SourceCrawlerReconciler) handleError(ctx context.Context, sourceCrawlerCR *operatorv1alpha1.SourceCrawler, err error) error {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
@@ -382,16 +559,24 @@ func (r *SourceCrawlerReconciler) findDependents(ctx context.Context, obj client
 	return requests
 }
 
-// findSecretDependents returns reconcile requests for SourceCrawlers that reference the changed Secret via SecretRef.
+// findSecretDependents returns reconcile requests for SourceCrawlers that reference the changed Secret via SecretRef,
+// or all git-type SourceCrawlers when the ControllerConfig secret changes (fallback token).
 func (r *SourceCrawlerReconciler) findSecretDependents(ctx context.Context, obj client.Object) []reconcile.Request {
 	list := &operatorv1alpha1.SourceCrawlerList{}
 	if err := r.List(ctx, list, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil
 	}
 	secretName := obj.GetName()
+	isControllerConfigSecret := secretName == controllerConfigSecretRef
 	var requests []reconcile.Request
 	for _, item := range list.Items {
 		if item.Spec.SecretRef == secretName {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: item.Name, Namespace: item.Namespace},
+			})
+			continue
+		}
+		if isControllerConfigSecret && item.Spec.SourceCrawlerConfig.Type == operatorv1alpha1.TypeGit {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: item.Name, Namespace: item.Namespace},
 			})
