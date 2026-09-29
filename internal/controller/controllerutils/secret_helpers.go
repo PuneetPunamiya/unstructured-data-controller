@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 )
@@ -57,6 +58,23 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 		SessionToken:    string(secret.Data[prefix+"SESSION_TOKEN"]),
 		Endpoint:        string(secret.Data[prefix+"ENDPOINT"]),
 	}, nil
+}
+
+// GitLabTokenFromSecret reads the GitLab access token from a K8s Secret.
+func GitLabTokenFromSecret(ctx context.Context, c client.Client, secretName, namespace string) (string, error) {
+	if secretName == "" {
+		return "", nil
+	}
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return "", fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
+	}
+	token, ok := secret.Data["GITLAB_TOKEN"]
+	if !ok || len(token) == 0 {
+		log.FromContext(ctx).Info("WARNING: GITLAB_TOKEN key not found or empty in secret, proceeding without auth", "secret", secretName)
+		return "", nil
+	}
+	return string(token), nil
 }
 
 // GDriveCredentialsFromSecret reads the Google service account JSON

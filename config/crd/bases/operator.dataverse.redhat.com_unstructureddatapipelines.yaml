@@ -291,6 +291,65 @@ spec:
                       description: SourceCrawlerConfig configures where to read unstructured
                         data from.
                       properties:
+                        gitLabConfig:
+                          description: GitLabConfig configures GitLab repositories
+                            as a data source.
+                          properties:
+                            pollInterval:
+                              description: |-
+                                PollInterval configures how often to check for new commits via ls-remote.
+                                Defaults to "5m". Minimum enforced is "5m". Examples: "5m", "1h", "24h".
+                              type: string
+                            repos:
+                              description: Repos is the list of GitLab repositories
+                                to crawl.
+                              items:
+                                description: GitLabRepo configures a single GitLab
+                                  repository to crawl.
+                                properties:
+                                  description:
+                                    description: Description is a human-readable summary
+                                      of what is crawled from this repository.
+                                    type: string
+                                  fileFormats:
+                                    description: |-
+                                      FileFormats restricts which file types to crawl by extension (e.g. ["md", "pdf"]).
+                                      Bare extensions without dots or globs. If empty, all files are crawled.
+                                    items:
+                                      type: string
+                                    type: array
+                                  name:
+                                    description: Name is a human-readable short name
+                                      for this repository, used in status and logging.
+                                    type: string
+                                  paths:
+                                    description: |-
+                                      Paths is a list of include and exclude rules for crawling.
+                                      Entries without "!" prefix are includes (e.g. "docs/", "README.md").
+                                      Entries with "!" prefix are excludes (e.g. "!vendor/**", "!**/test/**").
+                                      "**" matches zero or more directories; "*" matches within a single segment.
+                                      If no includes are specified, the entire repo is crawled (excludes still apply).
+                                      Excludes always take precedence over includes.
+                                    items:
+                                      type: string
+                                    type: array
+                                  repo:
+                                    description: Repo is the GitLab repository URL
+                                      (HTTPS).
+                                    type: string
+                                  revision:
+                                    description: |-
+                                      Revision to track: a branch name, tag name, or full commit SHA.
+                                      Defaults to "main".
+                                    type: string
+                                required:
+                                - repo
+                                type: object
+                              minItems: 1
+                              type: array
+                          required:
+                          - repos
+                          type: object
                         googleDriveConfig:
                           description: |-
                             GDriveConfig configures Google Drive folder crawling at the pipeline level.

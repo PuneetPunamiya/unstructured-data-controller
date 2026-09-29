@@ -65,12 +65,20 @@ type GDriveFolderStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
+// GitLabRepoStatus tracks the observed state of a single GitLab repository.
+type GitLabRepoStatus struct {
+	Repo     string `json:"repo"`
+	HeadHash string `json:"headHash,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
 // SourceCrawlerStatus defines the observed state of SourceCrawler.
 type SourceCrawlerStatus struct {
 	LastAppliedGeneration int64                `json:"lastAppliedGeneration,omitempty"`
 	Conditions            []metav1.Condition   `json:"conditions,omitempty"`
 	FilesProcessed        int64                `json:"filesProcessed,omitempty"`
 	GDriveStatus          []GDriveFolderStatus `json:"gdriveStatus,omitempty"`
+	GitLabRepoStatus      []GitLabRepoStatus   `json:"gitLabRepoStatus,omitempty"`
 }
 
 // +kubebuilder:object:root=true

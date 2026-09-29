@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gitlabclient"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/pathfilter"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
@@ -133,6 +136,37 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// the Google client per pipeline (keyed by secret resourceVersion).
 		defer gdriveSource.Close()
 		source = gdriveSource
+
+	case operatorv1alpha1.TypeGitLab:
+		storedFiles, repoStatus, err := r.buildAndSyncGitLabRepos(ctx, sourceCrawlerCR, sourceCrawlerConfig.GitLabConfig, outputDir)
+		if err != nil {
+			if patchErr := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
+				sourceCrawlerCR.Status.GitLabRepoStatus = repoStatus
+			}); patchErr != nil {
+				logger.Error(patchErr, "failed to update SourceCrawler CR status with gitlab repo status")
+			}
+			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
+		}
+
+		successMessage := fmt.Sprintf("successfully reconciled source crawler: %s", sourceCrawlerCR.Name)
+		if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
+			sourceCrawlerCR.Status.FilesProcessed += int64(len(storedFiles))
+			sourceCrawlerCR.Status.GitLabRepoStatus = repoStatus
+			sourceCrawlerCR.UpdateStatus(successMessage, nil)
+		}); err != nil {
+			logger.Error(err, "failed to update SourceCrawler CR status")
+			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
+		}
+
+		const defaultPollInterval = 5 * time.Minute
+		interval := defaultPollInterval
+		if sourceCrawlerConfig.GitLabConfig.PollInterval != nil && sourceCrawlerConfig.GitLabConfig.PollInterval.Duration > 0 {
+			interval = sourceCrawlerConfig.GitLabConfig.PollInterval.Duration
+		}
+		if interval < defaultPollInterval {
+			interval = defaultPollInterval
+		}
+		return ctrl.Result{RequeueAfter: interval}, nil
 
 	default:
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("unsupported source type: %s", sourceCrawlerConfig.Type))
@@ -324,6 +358,132 @@ func buildGDriveStatus(gds *unstructured.GDriveSource, gdriveConfig *operatorv1a
 		result = append(result, status)
 	}
 	return result
+}
+
+func (r *SourceCrawlerReconciler) buildAndSyncGitLabRepos(
+	ctx context.Context,
+	sourceCrawlerCR *operatorv1alpha1.SourceCrawler,
+	gitLabConfig *operatorv1alpha1.GitLabConfig,
+	outputDir string,
+) ([]unstructured.RawFileMetadata, []operatorv1alpha1.GitLabRepoStatus, error) {
+	logger := log.FromContext(ctx)
+
+	if gitLabConfig == nil {
+		return nil, nil, errors.New("gitLabConfig is required when source type is gitlab")
+	}
+
+	token, err := controllerutils.GitLabTokenFromSecret(
+		ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get gitlab credentials: %w", err)
+	}
+
+	prevStatusMap := make(map[string]string)
+	for _, rs := range sourceCrawlerCR.Status.GitLabRepoStatus {
+		prevStatusMap[rs.Repo] = rs.HeadHash
+	}
+
+	var allStoredFiles []unstructured.RawFileMetadata
+	repoStatus := make([]operatorv1alpha1.GitLabRepoStatus, 0, len(gitLabConfig.Repos))
+	var repoErrors []string
+
+	for _, repo := range gitLabConfig.Repos {
+		revision := repo.Revision
+		if revision == "" {
+			revision = "main"
+		}
+
+		gitLabClient := gitlabclient.NewClient(repo.Repo, revision, token)
+
+		currentHash, err := gitLabClient.HeadHash(ctx)
+		if err != nil {
+			logger.Error(err, "failed to check gitlab HEAD", "repo", repo.Repo)
+			repoStatus = append(repoStatus, operatorv1alpha1.GitLabRepoStatus{
+				Repo:     repo.Repo,
+				HeadHash: prevStatusMap[repo.Repo],
+				Error:    fmt.Sprintf("failed to check HEAD: %v", err),
+			})
+			repoErrors = append(repoErrors, fmt.Sprintf("%s: %v", repo.Repo, err))
+			continue
+		}
+
+		slug := repo.Name
+		if slug == "" {
+			slug = repoSlug(repo.Repo)
+		}
+		repoOutputDir := path.Join(outputDir, slug)
+
+		if currentHash == prevStatusMap[repo.Repo] {
+			files, listErr := r.fileStore.ListFilesInPath(ctx, repoOutputDir)
+			if listErr == nil && len(files) > 0 {
+				logger.Info("gitlab HEAD unchanged, skipping clone", "repo", repo.Repo, "hash", currentHash)
+				repoStatus = append(repoStatus, operatorv1alpha1.GitLabRepoStatus{
+					Repo:     repo.Repo,
+					HeadHash: currentHash,
+				})
+				continue
+			}
+			logger.Info("gitlab HEAD unchanged but filestore empty, will re-sync", "repo", repo.Repo)
+		}
+
+		logger.Info("gitlab HEAD changed, cloning", "repo", repo.Repo,
+			"previousHash", prevStatusMap[repo.Repo], "currentHash", currentHash)
+
+		filter, err := pathfilter.New(repo.Paths)
+		if err != nil {
+			logger.Error(err, "invalid path rules", "repo", repo.Repo)
+			repoStatus = append(repoStatus, operatorv1alpha1.GitLabRepoStatus{
+				Repo:  repo.Repo,
+				Error: fmt.Sprintf("invalid path rules: %v", err),
+			})
+			repoErrors = append(repoErrors, fmt.Sprintf("%s: %v", repo.Repo, err))
+			continue
+		}
+
+		gitLabSource := &unstructured.GitLabSource{
+			GitLabClient: gitLabClient,
+			Filter:       filter,
+			FileFormats:  repo.FileFormats,
+			OutputDir:    repoOutputDir,
+			HeadHash:     currentHash,
+		}
+
+		storedFiles, syncErr := gitLabSource.SyncFilesToFilestore(ctx, r.fileStore)
+		allStoredFiles = append(allStoredFiles, storedFiles...)
+		if syncErr != nil {
+			logger.Error(syncErr, "partial sync failure for gitlab repo", "repo", repo.Repo, "filesStored", len(storedFiles))
+			repoStatus = append(repoStatus, operatorv1alpha1.GitLabRepoStatus{
+				Repo:     repo.Repo,
+				HeadHash: currentHash,
+				Error:    fmt.Sprintf("sync partially failed: %v", syncErr),
+			})
+			repoErrors = append(repoErrors, fmt.Sprintf("%s: %v", repo.Repo, syncErr))
+			continue
+		}
+
+		logger.Info("successfully synced gitlab repo", "repo", repo.Repo, "files", len(storedFiles))
+		allStoredFiles = append(allStoredFiles, storedFiles...)
+		repoStatus = append(repoStatus, operatorv1alpha1.GitLabRepoStatus{
+			Repo:     repo.Repo,
+			HeadHash: currentHash,
+		})
+	}
+
+	if len(repoErrors) == len(gitLabConfig.Repos) {
+		return allStoredFiles, repoStatus, fmt.Errorf("all gitlab repos failed: %s", strings.Join(repoErrors, "; "))
+	}
+
+	return allStoredFiles, repoStatus, nil
+}
+
+func repoSlug(repoURL string) string {
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return strings.ReplaceAll(repoURL, "/", "-")
+	}
+	slug := strings.TrimPrefix(u.Path, "/")
+	slug = strings.TrimSuffix(slug, ".git")
+	return strings.ReplaceAll(slug, "/", "-")
 }
 
 func (r *SourceCrawlerReconciler) handleError(ctx context.Context, sourceCrawlerCR *operatorv1alpha1.SourceCrawler, err error) error {

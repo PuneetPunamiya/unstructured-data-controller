@@ -83,6 +83,7 @@ type (
 const (
 	TypeS3                             UnstructuredDataType = "s3"
 	TypeGoogleDrive                    UnstructuredDataType = "googleDrive"
+	TypeGitLab                         UnstructuredDataType = "gitlab"
 	ChunkingStrategyRecursiveCharacter ChunkingStrategy     = "recursiveCharacterTextSplitter"
 	ChunkingStrategyMarkdown           ChunkingStrategy     = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy     = "tokenTextSplitter"
@@ -153,6 +154,48 @@ type SourceCrawlerConfig struct {
 	Type              UnstructuredDataType `json:"type,omitempty"`
 	S3Config          S3Config             `json:"s3Config,omitempty"`
 	GoogleDriveConfig *GoogleDriveConfig   `json:"googleDriveConfig,omitempty"`
+	// +optional
+	GitLabConfig *GitLabConfig `json:"gitLabConfig,omitempty"`
+}
+
+// GitLabConfig configures GitLab repositories as a data source.
+type GitLabConfig struct {
+	// Repos is the list of GitLab repositories to crawl.
+	// +kubebuilder:validation:MinItems=1
+	Repos []GitLabRepo `json:"repos"`
+	// PollInterval configures how often to check for new commits via ls-remote.
+	// Defaults to "5m". Minimum enforced is "5m". Examples: "5m", "1h", "24h".
+	// +optional
+	PollInterval *metav1.Duration `json:"pollInterval,omitempty"`
+}
+
+// GitLabRepo configures a single GitLab repository to crawl.
+type GitLabRepo struct {
+	// Repo is the GitLab repository URL (HTTPS).
+	// +kubebuilder:validation:Required
+	Repo string `json:"repo"`
+	// Name is a human-readable short name for this repository, used in status and logging.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Description is a human-readable summary of what is crawled from this repository.
+	// +optional
+	Description string `json:"description,omitempty"`
+	// Revision to track: a branch name, tag name, or full commit SHA.
+	// Defaults to "main".
+	// +optional
+	Revision string `json:"revision,omitempty"`
+	// FileFormats restricts which file types to crawl by extension (e.g. ["md", "pdf"]).
+	// Bare extensions without dots or globs. If empty, all files are crawled.
+	// +optional
+	FileFormats []string `json:"fileFormats,omitempty"`
+	// Paths is a list of include and exclude rules for crawling.
+	// Entries without "!" prefix are includes (e.g. "docs/", "README.md").
+	// Entries with "!" prefix are excludes (e.g. "!vendor/**", "!**/test/**").
+	// "**" matches zero or more directories; "*" matches within a single segment.
+	// If no includes are specified, the entire repo is crawled (excludes still apply).
+	// Excludes always take precedence over includes.
+	// +optional
+	Paths []string `json:"paths,omitempty"`
 }
 
 // GDriveConfig configures Google Drive folder crawling at the pipeline level.
