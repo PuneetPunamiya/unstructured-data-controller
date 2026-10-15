@@ -195,7 +195,7 @@ func convertFileGlobToSQL(glob string) string {
 	if glob == "" {
 		return ""
 	}
-	r := strings.ReplaceAll(glob, "%", "\\%")
-	r = strings.ReplaceAll(r, "_", "\\_")
-	return strings.ReplaceAll(r, "*", "%")
+	pattern := strings.ReplaceAll(glob, "%", "\\%")
+	pattern = strings.ReplaceAll(pattern, "_", "\\_")
+	return strings.ReplaceAll(pattern, "*", "%")
 }
